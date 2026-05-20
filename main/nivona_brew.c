@@ -235,12 +235,26 @@ static void brew_task(void *arg) {
         //   filter    -1 % per brew    (warn < 10)
         //   BU clean  -1 % per 2 brews (warn < 20)
         //   descale   -1 % per 5 brews (warn < 20)
-        int32_t wear_ticks = (stats->total_id != 0)
-            ? nivona_store_get_num(stats->total_id)
-            : (nivona_store_get_num(610) == 0 ? 1 : 0); // fallback edge
-        // Use a monotonic local counter if the family has no total:
-        if (stats->total_id == 0) {
-            static int32_t s_local_wear_tick = 0;
+        //
+        // `wear_ticks` drives the parity-and-modulo gauges. Source:
+        //   - If the family has a `total_id` HR counter (Nivona 700/79X
+        //     have one, 600 does not), use that — it persists across
+        //     reboots so the gauges keep degrading consistently.
+        //   - Otherwise use a static local counter as a fallback. The
+        //     local counter is NOT persisted across reboots — that's
+        //     the existing trade-off — but at least it doesn't diverge
+        //     mid-session when the user CLI-switches family (which used
+        //     to wipe `stats->total_id` but leave the local counter
+        //     unchanged, producing nonsense parity decisions).
+        //     (Audit-V3 I6.)
+        static int32_t s_local_wear_tick = 0;
+        int32_t wear_ticks;
+        if (stats->total_id != 0) {
+            wear_ticks = nivona_store_get_num(stats->total_id);
+            // Sync the local counter so a future family-switch back to
+            // a no-total_id family doesn't pick up stale parity.
+            s_local_wear_tick = wear_ticks;
+        } else {
             wear_ticks = ++s_local_wear_tick;
         }
 

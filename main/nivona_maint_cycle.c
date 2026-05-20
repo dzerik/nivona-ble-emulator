@@ -155,7 +155,24 @@ static void cycle_task(void *arg) {
     }
 
     // Set the process code = cycle kind. Progress ramps 0→100.
-    nivona_fsm_set_process((int16_t)kind, 0);
+    //
+    // Substitute a "busy/maintenance" sentinel (MELITTA_PROC_BUSY = 99)
+    // if the cycle's wire value collides with the current family's
+    // brewing code. The only documented collision is
+    // NIVONA_CYCLE_FILTER_INSERT = 11 vs family.process_brewing = 11
+    // for every non-8000 Nivona family — without this guard HA's
+    // process sensor reads filter-insert as "brewing" mid-cycle and
+    // any automation gating on is_brewing misbehaves. (Audit-V3 C2.)
+    const nivona_family_t *fam_now = nivona_family_current();
+    int16_t emit_code = (int16_t)kind;
+    if ((int16_t)kind == fam_now->process_brewing ||
+        (int16_t)kind == fam_now->process_ready) {
+        ESP_LOGW(TAG, "cycle code %d collides with brew/ready on family %s "
+                      "— substituting BUSY sentinel 99 for HX emit",
+                 (int)kind, fam_now->key);
+        emit_code = 99;  // MELITTA_PROC_BUSY
+    }
+    nivona_fsm_set_process(emit_code, 0);
     push_status();
 
     const uint32_t TICK_MS = 500;
