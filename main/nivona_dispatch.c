@@ -95,7 +95,11 @@ static void handle_hu(const uint8_t *payload, size_t len) {
     nivona_hu_verifier(resp, 0, 6, resp + 6);
     send_response(CMD_HANDSHAKE, resp, sizeof(resp));
     g_diag_hu_resp++;
-    ESP_LOGI(TAG, "HU ok, session_key=%02x%02x", kp[0], kp[1]);
+    // Session-key prefix is the only post-handshake authentication we
+    // have — logging it at INFO leaks it to anyone reading the telnet
+    // console. The diag counters (g_diag_hu_ver_ok/bad) already give
+    // the operational visibility we need. (Audit-V3 finding I-Block1.)
+    ESP_LOGD(TAG, "HU ok, session_key=%02x%02x", kp[0], kp[1]);
 }
 
 // ---- Status (HX) -------------------------------------------------------

@@ -123,7 +123,13 @@ static const struct ble_gatt_chr_def CHARS[] = {
     {
         .uuid = &CHAR_AD02_UUID.u,
         .access_cb = on_ad0x_stub,
-        .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ,
+        // AD02 is notify-only. Previously had BLE_GATT_CHR_F_READ as
+        // well, but the access_cb was a stub returning empty — when
+        // the Nivona Android app does a precautionary read of AD02
+        // during Initialize() it got an empty payload and could
+        // misbehave. The real machine doesn't allow reads on AD02
+        // either. (Audit-V3 finding I-Block2.)
+        .flags = BLE_GATT_CHR_F_NOTIFY,
         .val_handle = &s_notify_handle,
     },
     {

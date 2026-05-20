@@ -1,9 +1,18 @@
 #include "nivona_crypto.h"
 
-const uint8_t NIVONA_RC4_KEY[NIVONA_RC4_KEY_LEN] = {
+// File-static so the symbol does NOT appear in the firmware's ELF
+// .rodata symbol table. The bytes are still readable by anyone with
+// the firmware binary (they have to be — the hardware decrypts with
+// them), but at least `readelf -s` won't hand them out by name.
+// Callers cipher with this key via nivona_rc4_with_master_key().
+static const uint8_t NIVONA_RC4_KEY[NIVONA_RC4_KEY_LEN] = {
     'N','I','V','_','0','6','0','6','1','6','_','V','1','0','_','1',
     '*','9','#','3','!','4','$','6','+','4','r','e','s','-','?','3'
 };
+
+void nivona_rc4_with_master_key(const uint8_t *in, uint8_t *out, size_t len) {
+    nivona_rc4(NIVONA_RC4_KEY, NIVONA_RC4_KEY_LEN, in, out, len);
+}
 
 const uint8_t NIVONA_HU_TABLE[256] = {
     0x62,0x06,0x55,0x96,0x24,0x17,0x70,0xA4,0x87,0xCF,0xA9,0x05,0x1A,0x40,0xA5,0xDB,

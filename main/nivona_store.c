@@ -41,7 +41,7 @@ static void nvs_load_all(void) {
             int16_t id = (int16_t)atoi(info.key);
             int32_t v = 0;
             if (nvs_get_i32(h, info.key, &v) == ESP_OK) {
-                nivona_store_set_num(id, v);  // populate in-mem, doesn't re-write
+                set_num_mem(id, v);  // load-path: NO re-persist
             }
             err = nvs_entry_next(&it);
         }
@@ -161,12 +161,16 @@ void nivona_store_erase_num(int16_t id) {
     }
 }
 
-void nivona_store_set_num(int16_t id, int32_t value) {
+// Memory-only update — does NOT write to NVS. Used by nvs_load_all
+// so we don't re-persist the values we just read from NVS at boot
+// (50+ open/commit/close cycles + flash wear per cold start otherwise).
+// Audit-V3 finding I5.
+static void set_num_mem(int16_t id, int32_t value) {
     int free_slot = -1;
     for (int i = 0; i < NUM_CAP; i++) {
         if (s_num[i].used && s_num[i].id == id) {
             s_num[i].value = value;
-            goto persist;
+            return;
         }
         if (!s_num[i].used && free_slot < 0) free_slot = i;
     }
@@ -177,15 +181,16 @@ void nivona_store_set_num(int16_t id, int32_t value) {
     s_num[free_slot].id = id;
     s_num[free_slot].value = value;
     s_num[free_slot].used = true;
-persist:
-    {
-        nvs_handle_t h;
-        if (nvs_open(NS_NUM, NVS_READWRITE, &h) == ESP_OK) {
-            char key[8]; make_key(key, sizeof(key), id);
-            nvs_set_i32(h, key, value);
-            nvs_commit(h);
-            nvs_close(h);
-        }
+}
+
+void nivona_store_set_num(int16_t id, int32_t value) {
+    set_num_mem(id, value);
+    nvs_handle_t h;
+    if (nvs_open(NS_NUM, NVS_READWRITE, &h) == ESP_OK) {
+        char key[8]; make_key(key, sizeof(key), id);
+        nvs_set_i32(h, key, value);
+        nvs_commit(h);
+        nvs_close(h);
     }
 }
 

@@ -15,10 +15,29 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "mdns.h"
-#include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+// (Removed dead `nvs_flash.h` include — NVS init lives in main.c.)
 
 static const char *TAG = "nivona_wifi";
 static volatile bool s_connected = false;
+static uint8_t s_consecutive_failures = 0;
+
+// Map ESP-IDF WIFI_REASON_* codes to a human-readable label for logs.
+// Only the most common diagnostics — anything else falls through to a
+// numeric print.
+static const char *reason_label(uint8_t r) {
+    switch (r) {
+        case WIFI_REASON_NO_AP_FOUND:           return "NO_AP_FOUND";
+        case WIFI_REASON_AUTH_EXPIRE:           return "AUTH_EXPIRE";
+        case WIFI_REASON_AUTH_FAIL:             return "AUTH_FAIL";
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:return "4WAY_HANDSHAKE_TIMEOUT";
+        case WIFI_REASON_BEACON_TIMEOUT:        return "BEACON_TIMEOUT";
+        case WIFI_REASON_ASSOC_FAIL:            return "ASSOC_FAIL";
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:     return "HANDSHAKE_TIMEOUT";
+        default:                                return "OTHER";
+    }
+}
 
 static void event_handler(void *arg, esp_event_base_t base,
                           int32_t id, void *data) {
@@ -26,9 +45,33 @@ static void event_handler(void *arg, esp_event_base_t base,
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_connected = false;
-        ESP_LOGW(TAG, "disconnected, reconnecting...");
+        wifi_event_sta_disconnected_t *ev =
+            (wifi_event_sta_disconnected_t *)data;
+        uint8_t r = ev ? ev->reason : 0;
+        s_consecutive_failures++;
+        // Credential-class failures: log at ERROR so the developer
+        // actually notices on the serial console instead of wondering
+        // why telnet never comes up. We still retry, but with a back-
+        // off so we don't burn CPU pummelling a dead AP.
+        if (r == WIFI_REASON_AUTH_FAIL ||
+            r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+            r == WIFI_REASON_AUTH_EXPIRE) {
+            ESP_LOGE(TAG, "WiFi credential failure reason=%u (%s); "
+                          "check secrets.yaml — retrying with back-off",
+                     r, reason_label(r));
+        } else if (s_consecutive_failures % 10 == 1) {
+            // Throttle the non-credential warning so a flapping AP
+            // doesn't fill the log buffer.
+            ESP_LOGW(TAG, "WiFi disconnected reason=%u (%s), retry %u",
+                     r, reason_label(r), (unsigned)s_consecutive_failures);
+        }
+        // Back-off proportional to consecutive failures, capped at 30s.
+        uint32_t delay_ms = 500u * (uint32_t)s_consecutive_failures;
+        if (delay_ms > 30000u) delay_ms = 30000u;
+        if (delay_ms > 0) vTaskDelay(pdMS_TO_TICKS(delay_ms));
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_consecutive_failures = 0;
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         s_connected = true;
