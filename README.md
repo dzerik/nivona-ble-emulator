@@ -1,9 +1,16 @@
 # Nivona BLE Emulator
 
 **Version:** see [`VERSION`](VERSION) · **Changelog:**
-[`CHANGELOG.md`](CHANGELOG.md) · **Tags:** `emu-v<X.Y.Z>` (independent
-from the HA integration's `manifest.json` version — the two projects
-ship at their own cadence).
+[`CHANGELOG.md`](CHANGELOG.md) · **Tags:** `emu-v<X.Y.Z>`
+
+> Companion project to the
+> [`dzerik/melitta-barista-ha`](https://github.com/dzerik/melitta-barista-ha)
+> Home Assistant integration. The emulator lived inside that repo under
+> `esp_emulator/` from v0.44.0 through v0.51.0; it was split out for
+> independent release cadence, cleaner HACS indexing, and so its
+> ESP-IDF build pipeline doesn't compete with the integration's pytest
+> CI. Git history (11 commits, 6 tags `emu-v0.2.0` → `emu-v0.7.0`) was
+> preserved via `git subtree split`.
 
 A BLE peripheral emulator that impersonates a Nivona NICR/NIVO coffee machine
 on ESP32, for offline development of the Home Assistant `melitta_barista`
