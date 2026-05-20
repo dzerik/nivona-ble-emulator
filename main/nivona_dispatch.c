@@ -27,7 +27,13 @@ uint32_t g_diag_frame_parsed = 0;
 // ---- BE helpers --------------------------------------------------------
 
 static int16_t be16_i(const uint8_t *p) {
-    return (int16_t)((p[0] << 8) | p[1]);
+    // Cast each uint8_t to uint32_t before the shift. The C integer
+    // promotion otherwise raises p[0] to (signed) int, and on a 16-bit
+    // int platform that would left-shift into the sign bit — UB per
+    // C11 6.5.7. On ESP32 int is 32-bit so the immediate result is
+    // safe in practice, but the explicit cast makes the code portable
+    // and silences UBSAN.
+    return (int16_t)(((uint32_t)p[0] << 8) | (uint32_t)p[1]);
 }
 static void put_be16(uint8_t *p, int16_t v) {
     p[0] = (uint8_t)((v >> 8) & 0xFF); p[1] = (uint8_t)(v & 0xFF);
@@ -171,8 +177,14 @@ static void handle_hr(const uint8_t *req, size_t len) {
 static void handle_hw(const uint8_t *req, size_t len) {
     if (len >= 6) {
         int16_t id = be16_i(req);
-        int32_t v = (int32_t)((req[2] << 24) | (req[3] << 16) |
-                              (req[4] << 8)  |  req[5]);
+        // Cast each uint8_t to uint32_t before shifting — promoting
+        // req[2] >= 0x80 into the sign bit of a signed int is UB per
+        // C11 6.5.7. Cast the assembled value back to int32_t for the
+        // store API.
+        int32_t v = (int32_t)(((uint32_t)req[2] << 24) |
+                              ((uint32_t)req[3] << 16) |
+                              ((uint32_t)req[4] << 8)  |
+                               (uint32_t)req[5]);
         nivona_store_set_num(id, v);
         ESP_LOGI(TAG, "HW id=%d value=%ld", id, (long)v);
     }

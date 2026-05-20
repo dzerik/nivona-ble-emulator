@@ -108,6 +108,18 @@ void nivona_ble_start_advertising(void) {
     // espressif/esp-idf#11001). Re-setting here would be silently ignored.
     const char *name = ble_svc_gap_device_name();
 
+    // Defensive: idempotently stop any previous adv before we start a
+    // new one. On a failed-connect restart (BLE_GAP_EVENT_CONNECT with
+    // status != 0) the controller can still be in adv-active state for
+    // a brief window, and ble_gap_adv_start() would then return
+    // BLE_HS_EALREADY. Calling adv_stop first returns BLE_HS_EALREADY
+    // when adv wasn't running, which we deliberately ignore — both
+    // outcomes leave us in the desired "adv stopped" state.
+    int stop_rc = ble_gap_adv_stop();
+    if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "adv_stop rc=%d before restart (ignored)", stop_rc);
+    }
+
     // Primary adv data: flags + short name + service UUID
     struct ble_hs_adv_fields fields = {0};
     // Primary ADV budget is 31 bytes. Packing:

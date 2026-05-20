@@ -235,7 +235,31 @@ void nivona_frame_send(const char *cmd,
                        bool encrypt) {
     static uint8_t frame[MAX_FRAME_BYTES];  // static: NimBLE task stack is tight
     size_t pos = 0;
-    size_t cmd_len = strlen(cmd);
+    size_t cmd_len = cmd ? strlen(cmd) : 0;
+
+    // Bounds check BEFORE any write into the static frame[] — overflow
+    // here corrupts the buffer for every subsequent caller because the
+    // buffer is static. Compute the total bytes we'll write:
+    //   FRAME_START (1) + cmd (cmd_len) +
+    //   optional key prefix (KEY_PREFIX_LEN) +
+    //   payload (payload_len) +
+    //   checksum (1) + FRAME_END (1).
+    // The 2-byte cmd_len assumption (max "HX" / "HA" / "HU" etc.) is
+    // also enforced — a typo'd 3-byte opcode would silently slide past
+    // checks downstream.
+    size_t kp_len = (include_key_prefix && s_handshake_done) ? KEY_PREFIX_LEN : 0;
+    size_t required = 1 + cmd_len + kp_len + payload_len + 1 + 1;
+    if (cmd_len < 1 || cmd_len > 2) {
+        ESP_LOGE(TAG, "frame_send: cmd length %u outside [1,2] (cmd=%.4s)",
+                 (unsigned)cmd_len, cmd ? cmd : "(null)");
+        return;
+    }
+    if (required > sizeof(frame)) {
+        ESP_LOGE(TAG, "frame_send: required %u > frame %u (cmd=%s payload_len=%u)",
+                 (unsigned)required, (unsigned)sizeof(frame),
+                 cmd, (unsigned)payload_len);
+        return;
+    }
 
     frame[pos++] = FRAME_START;
     memcpy(frame + pos, cmd, cmd_len);

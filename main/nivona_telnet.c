@@ -36,7 +36,11 @@ static int telnet_vprintf(const char *fmt, va_list args) {
         char buf[256];
         int n = vsnprintf(buf, sizeof(buf), fmt, copy);
         if (n > 0) {
-            if (n > (int)sizeof(buf)) n = sizeof(buf);
+            // vsnprintf returns the count it WOULD have written, not
+            // what fit. Clamp to sizeof(buf)-1 so we never send the
+            // trailing NUL terminator down the telnet stream (clients
+            // can choke on embedded NULs in the log).
+            if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
             (void)send(fd, buf, n, MSG_DONTWAIT);
         }
     }
@@ -134,6 +138,11 @@ static void client_task(void *arg) {
 
 static void listen_task(void *arg) {
     int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) {
+        ESP_LOGE(TAG, "socket() failed errno=%d — telnet unavailable", errno);
+        vTaskDelete(NULL);
+        return;
+    }
     int yes = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     struct sockaddr_in addr = {
@@ -153,13 +162,23 @@ static void listen_task(void *arg) {
     while (1) {
         int cfd = accept(lfd, NULL, NULL);
         if (cfd < 0) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        // Evict the previous client safely: capture the old fd under
+        // the mutex, then shutdown(SHUT_RDWR) it so the old client_task
+        // breaks out of its recv() with EOF and cleans up — close()
+        // alone races with an in-flight recv() because lwIP may recycle
+        // the fd before the old task observes the error. The old task
+        // is responsible for the final close() of the old fd.
+        // Audit-V3 finding C8.
+        int old_fd = -1;
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         if (s_client_fd >= 0) {
-            // Evict previous client
-            close(s_client_fd);
+            old_fd = s_client_fd;
         }
         s_client_fd = cfd;
         xSemaphoreGive(s_mutex);
+        if (old_fd >= 0) {
+            shutdown(old_fd, SHUT_RDWR);
+        }
         xTaskCreate(client_task, "telnet_cli", 4096,
                     (void *)(intptr_t)cfd, 5, NULL);
     }
