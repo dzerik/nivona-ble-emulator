@@ -4,6 +4,7 @@
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "nivona_brew.h"         // for collision check (brew_active)
@@ -32,10 +33,15 @@ static const char *TAG = "nivona_cycle";
 // nivona_stats to avoid writing IDs the family doesn't have
 // (e.g. descale = 220 on 8000/900, 222 on 1000, absent on 700/600).
 
+// Mirrors nivona_brew.c — all mutations of s_task / s_active / s_cancel
+// / s_kind go through s_lock. The mutex also acts as a release/acquire
+// fence so cycle_task observes s_kind after nivona_maint_cycle_start
+// wrote it (volatile alone does not imply that on dual-core Xtensa).
+static SemaphoreHandle_t s_lock = NULL;
 static TaskHandle_t s_task = NULL;
-static volatile bool s_active = false;
+static bool s_active = false;
 static volatile bool s_cancel = false;
-static volatile nivona_cycle_kind_t s_kind = NIVONA_CYCLE_GENERIC_CLEAN;
+static nivona_cycle_kind_t s_kind = NIVONA_CYCLE_GENERIC_CLEAN;
 
 static void push_status(void) {
     uint8_t payload[8];
@@ -116,11 +122,20 @@ const char *nivona_maint_cycle_name(nivona_cycle_kind_t k) {
 
 static void cycle_task(void *arg) {
     (void)arg;
-    const cycle_plan_t *plan = find_plan(s_kind);
+    // Snapshot s_kind under the lock — the acquire fence here pairs
+    // with the release in nivona_maint_cycle_start so the kind value
+    // is guaranteed visible regardless of which core scheduled us.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    nivona_cycle_kind_t kind = s_kind;
+    xSemaphoreGive(s_lock);
+
+    const cycle_plan_t *plan = find_plan(kind);
     if (plan == NULL) {
-        ESP_LOGE(TAG, "no plan for kind=%d", (int)s_kind);
+        ESP_LOGE(TAG, "no plan for kind=%d", (int)kind);
+        xSemaphoreTake(s_lock, portMAX_DELAY);
         s_active = false;
         s_task = NULL;
+        xSemaphoreGive(s_lock);
         vTaskDelete(NULL);
         return;
     }
@@ -140,7 +155,7 @@ static void cycle_task(void *arg) {
     }
 
     // Set the process code = cycle kind. Progress ramps 0→100.
-    nivona_fsm_set_process((int16_t)s_kind, 0);
+    nivona_fsm_set_process((int16_t)kind, 0);
     push_status();
 
     const uint32_t TICK_MS = 500;
@@ -185,11 +200,11 @@ static void cycle_task(void *arg) {
         // consumable = fresh; descale → water consumable unchanged
         // (real machines consume a lot of water during descale, we
         // don't simulate that yet).
-        if (s_kind == NIVONA_CYCLE_FILTER_INSERT ||
-            s_kind == NIVONA_CYCLE_FILTER_REPLACE) {
+        if (kind == NIVONA_CYCLE_FILTER_INSERT ||
+            kind == NIVONA_CYCLE_FILTER_REPLACE) {
             nivona_consumable_set(NIVONA_CONSUM_FILTER, 100);
         }
-        if (s_kind == NIVONA_CYCLE_FILTER_REMOVE) {
+        if (kind == NIVONA_CYCLE_FILTER_REMOVE) {
             nivona_consumable_set(NIVONA_CONSUM_FILTER, 0);
         }
     }
@@ -203,17 +218,24 @@ static void cycle_task(void *arg) {
 
     ESP_LOGI(TAG, "cycle done: %s (%s)", plan->label,
              s_cancel ? "cancelled" : "ok");
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_active = false;
     s_cancel = false;
     s_task = NULL;
+    xSemaphoreGive(s_lock);
     vTaskDelete(NULL);
 }
 
-void nivona_maint_cycle_init(void) { /* nothing yet */ }
+void nivona_maint_cycle_init(void) {
+    if (s_lock == NULL) {
+        s_lock = xSemaphoreCreateMutex();
+    }
+}
 
 bool nivona_maint_cycle_start(nivona_cycle_kind_t kind) {
-    if (s_active) {
-        ESP_LOGW(TAG, "cycle already active");
+    if (s_lock == NULL) {
+        ESP_LOGE(TAG, "nivona_maint_cycle_start called before init");
         return false;
     }
     if (nivona_brew_active()) {
@@ -222,15 +244,40 @@ bool nivona_maint_cycle_start(nivona_cycle_kind_t kind) {
     }
     if (find_plan(kind) == NULL) return false;
 
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "cycle already active");
+        return false;
+    }
     s_kind = kind;
     s_active = true;
     s_cancel = false;
-    xTaskCreate(cycle_task, "nivona_cycle", 4096, NULL, 5, &s_task);
+    TaskHandle_t new_task = NULL;
+    BaseType_t rc = xTaskCreate(cycle_task, "nivona_cycle", 4096,
+                                NULL, 5, &new_task);
+    if (rc != pdPASS) {
+        s_active = false;
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(TAG, "xTaskCreate failed: %d", (int)rc);
+        return false;
+    }
+    s_task = new_task;
+    xSemaphoreGive(s_lock);
     return true;
 }
 
 void nivona_maint_cycle_cancel(void) {
+    if (s_lock == NULL) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_active) s_cancel = true;
+    xSemaphoreGive(s_lock);
 }
 
-bool nivona_maint_cycle_active(void) { return s_active; }
+bool nivona_maint_cycle_active(void) {
+    if (s_lock == NULL) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool active = s_active;
+    xSemaphoreGive(s_lock);
+    return active;
+}

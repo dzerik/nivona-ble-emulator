@@ -56,17 +56,28 @@ static void exec_line(int fd, char *line) {
 
     // Redirect stdout to a memory buffer so command's printf() output
     // is captured and sent back to the telnet client.
+    //
+    // stdout is a process-global FILE*. The swap + restore is protected
+    // by s_mutex (which also guards telnet_vprintf) so a concurrent
+    // log line from another task can't observe a torn stdout pointer
+    // or trample the capture buffer. Audit-V3 finding I4.
     char capture[1024] = {0};
     FILE *mem = fmemopen(capture, sizeof(capture) - 1, "w");
     FILE *saved_stdout = stdout;
-    if (mem) stdout = mem;
+    if (mem) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        stdout = mem;
+        xSemaphoreGive(s_mutex);
+    }
 
     int ret = 0;
     esp_err_t err = esp_console_run(line, &ret);
 
     if (mem) {
         fflush(mem);
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
         stdout = saved_stdout;
+        xSemaphoreGive(s_mutex);
         fclose(mem);
     }
 

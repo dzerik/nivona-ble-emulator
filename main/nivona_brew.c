@@ -4,6 +4,7 @@
 #include "nivona_fsm.h"
 #include "nivona_frame.h"
 #include "nivona_maint.h"
+#include "nivona_maint_cycle.h"
 #include "nivona_stats.h"
 #include "nivona_store.h"
 
@@ -14,8 +15,15 @@
 
 static const char *TAG = "nivona_brew";
 
+// All mutations of s_task / s_active / s_cancel / s_arg happen under
+// s_lock — without it the check-then-set in nivona_brew_start races
+// with the cleanup at the bottom of brew_task on dual-core ESP32.
+// Taking + releasing the mutex also implies acquire/release fences,
+// which is exactly what we need so brew_task observes the s_arg value
+// the caller wrote before xTaskCreate.
+static SemaphoreHandle_t s_lock = NULL;
 static TaskHandle_t s_task = NULL;
-static volatile bool s_active = false;
+static bool s_active = false;
 static volatile bool s_cancel = false;
 
 // Send an unsolicited HX status notification so subscribers see progress.
@@ -80,30 +88,39 @@ static brew_arg_t s_arg;
 static void brew_task(void *arg) {
     (void)arg; // args passed via s_arg to avoid intptr_t truncation
 
+    // Snapshot s_arg under the lock so the rest of the task can run on
+    // a local copy and we don't hold the lock across the whole brew.
+    // Taking the mutex here is also the acquire fence that pairs with
+    // the release in nivona_brew_start().
+    brew_arg_t arg_snapshot;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    arg_snapshot = s_arg;
+    xSemaphoreGive(s_lock);
+
     // Snapshot current family's codes at brew start — if the CLI
     // switches family mid-brew the ramp still finishes consistently.
     const nivona_family_t *fam = nivona_family_current();
     const int16_t brew_code = fam->process_brewing;
     const int16_t ready_code = fam->process_ready;
 
-    const nivona_recipe_t *recipe = s_arg.recipe;
+    const nivona_recipe_t *recipe = arg_snapshot.recipe;
     const char *name = recipe ? recipe->name : "?";
     nivona_recipe_category_t cat =
         recipe ? recipe->category : NIVONA_CAT_COFFEE;
     const brew_ramp_t *ramp = find_ramp(cat);
 
     uint32_t total_ms = ramp->total_ms;
-    if (s_arg.two_cups) total_ms *= 2;
+    if (arg_snapshot.two_cups) total_ms *= 2;
 
     ESP_LOGI(TAG, "brew start family=%s selector=%u recipe=%s cat=%d "
              "total=%ums stages=%u brew_code=%d",
-             fam->key, s_arg.selector, name, (int)cat,
+             fam->key, arg_snapshot.selector, name, (int)cat,
              (unsigned)total_ms, (unsigned)ramp->stage_count,
              brew_code);
 
     // Announce brewing state — the Nivona app re-reads HX ~650 ms after
     // HE and requires the family-specific brewing code (4 / 11).
-    nivona_fsm_set_process(brew_code, (int16_t)s_arg.selector);
+    nivona_fsm_set_process(brew_code, (int16_t)arg_snapshot.selector);
     nivona_fsm_set_progress(0);
     nivona_fsm_set_info(0);
     push_status();
@@ -184,17 +201,17 @@ static void brew_task(void *arg) {
     // but would create ghost stat sensors in any honest HA stats map.
     if (!s_cancel) {
         const nivona_stats_t *stats = nivona_stats_current();
-        if (nivona_stats_has_recipe_counter(stats, s_arg.selector)) {
-            int16_t sel_id = (int16_t)(200 + s_arg.selector);
+        if (nivona_stats_has_recipe_counter(stats, arg_snapshot.selector)) {
+            int16_t sel_id = (int16_t)(200 + arg_snapshot.selector);
             nivona_store_set_num(sel_id,
                 nivona_store_get_num(sel_id) + 1);
             ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
-                     s_arg.selector, (int)sel_id,
+                     arg_snapshot.selector, (int)sel_id,
                      (int)nivona_store_get_num(sel_id));
         } else {
             ESP_LOGW(TAG, "cup counter: selector %u has no HR counter "
                      "on family %s (per StatisticsFactory) — skipped",
-                     s_arg.selector,
+                     arg_snapshot.selector,
                      fam ? fam->key : "?");
         }
         if (stats->total_id != 0) {
@@ -251,20 +268,30 @@ static void brew_task(void *arg) {
     nivona_maint_reevaluate();
     push_status();
 
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_active = false;
     s_cancel = false;
     s_task = NULL;
+    xSemaphoreGive(s_lock);
+
     ESP_LOGI(TAG, "brew done");
     vTaskDelete(NULL);
 }
 
-void nivona_brew_init(void) { /* nothing yet */ }
+void nivona_brew_init(void) {
+    if (s_lock == NULL) {
+        s_lock = xSemaphoreCreateMutex();
+    }
+}
 
 bool nivona_brew_start(int16_t process_value, bool two_cups) {
-    if (s_active) {
-        ESP_LOGW(TAG, "brew already active, rejecting");
+    if (s_lock == NULL) {
+        // Defensive: init must run first. We log loudly rather than
+        // silently allow the unsafe path.
+        ESP_LOGE(TAG, "nivona_brew_start called before nivona_brew_init");
         return false;
     }
+
     // Resolve selector → recipe descriptor in the current family.
     // process_value carries the selector byte from HE payload[3].
     const nivona_family_t *fam = nivona_family_current();
@@ -275,6 +302,16 @@ bool nivona_brew_start(int16_t process_value, bool two_cups) {
                  sel, fam->key);
         return false;
     }
+
+    // Refuse brew while a maintenance cycle is running. Mirror of the
+    // brew-active check that nivona_maint_cycle_start already has on
+    // its own side; without this guard concurrent brew+cycle interleave
+    // their nivona_fsm_set_process calls and corrupt the HX stream.
+    if (nivona_maint_cycle_active()) {
+        ESP_LOGW(TAG, "brew rejected: maintenance cycle in progress");
+        return false;
+    }
+
     // Refuse brew while a hard prompt is active — a real machine
     // would reject HE with its own error. Soft prompts (FLUSH /
     // MOVE_CUP) are fine because the brew itself flushes them.
@@ -287,21 +324,48 @@ bool nivona_brew_start(int16_t process_value, bool two_cups) {
         return false;
     }
 
+    // Atomic check-and-set on s_active + s_arg under one lock. Without
+    // this, two callers (e.g. CLI + dispatcher) could both pass the
+    // s_active check, both write s_arg, and both spawn brew_task.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "brew already active, rejecting");
+        return false;
+    }
     s_arg.selector = sel;
     s_arg.recipe = recipe;
     s_arg.two_cups = two_cups;
-
     s_active = true;
     s_cancel = false;
-    xTaskCreate(brew_task, "nivona_brew", 4096,
-                NULL, 5, &s_task);
+    TaskHandle_t new_task = NULL;
+    BaseType_t rc = xTaskCreate(brew_task, "nivona_brew", 4096,
+                                NULL, 5, &new_task);
+    if (rc != pdPASS) {
+        s_active = false;
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(TAG, "xTaskCreate failed: %d", (int)rc);
+        return false;
+    }
+    s_task = new_task;
+    xSemaphoreGive(s_lock);
     return true;
 }
 
 void nivona_brew_cancel(void) {
-    if (!s_active) return;
-    s_cancel = true;
-    ESP_LOGI(TAG, "brew cancel requested");
+    if (s_lock == NULL) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active) {
+        s_cancel = true;
+        ESP_LOGI(TAG, "brew cancel requested");
+    }
+    xSemaphoreGive(s_lock);
 }
 
-bool nivona_brew_active(void) { return s_active; }
+bool nivona_brew_active(void) {
+    if (s_lock == NULL) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool active = s_active;
+    xSemaphoreGive(s_lock);
+    return active;
+}
