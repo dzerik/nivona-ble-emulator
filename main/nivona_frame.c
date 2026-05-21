@@ -132,10 +132,25 @@ static void try_parse(void) {
     uint8_t recv_cs = plain[data_len - 1];
     size_t payload_len = data_len - 1;
 
-    // Capture for diagnostics
-    g_diag_last_decrypt_len = data_len;
-    memcpy(g_diag_last_decrypt, plain,
-           data_len < sizeof(g_diag_last_decrypt) ? data_len : sizeof(g_diag_last_decrypt));
+    // Capture for diagnostics — but redact the 2-byte session key
+    // prefix once the handshake is up. The diag-over-HTTP endpoint
+    // is unauthenticated by design (dev-only), and the prefix is the
+    // auth token that gates every subsequent frame. Anyone hitting
+    // /diag would otherwise harvest a fresh key and forge frames.
+    // Pre-handshake frames have no prefix, so we capture them whole.
+    {
+        size_t skip = (encrypted && s_handshake_done) ? KEY_PREFIX_LEN : 0;
+        if (data_len > skip) {
+            size_t cap_len = data_len - skip;
+            if (cap_len > sizeof(g_diag_last_decrypt)) {
+                cap_len = sizeof(g_diag_last_decrypt);
+            }
+            g_diag_last_decrypt_len = cap_len;
+            memcpy(g_diag_last_decrypt, plain + skip, cap_len);
+        } else {
+            g_diag_last_decrypt_len = 0;
+        }
+    }
 
     // Build checksum input: cmd_bytes + payload
     static uint8_t cs_in[MAX_FRAME_BYTES];
@@ -177,8 +192,17 @@ out:
 }
 
 void nivona_frame_reset(void) {
+    // Called from nivona_gatt_on_disconnect (NimBLE host task only).
+    // Also clear handshake state: a fresh connection must run a fresh
+    // HU; otherwise nivona_frame_send would prepend the *previous*
+    // peer's session key to the new peer's first response, leaking
+    // the old key to whoever connected. In practice the new peer
+    // disconnects too because of the bad prefix, but better not to
+    // leak in the first place.
     s_len = 0;
     s_in_frame = false;
+    s_handshake_done = false;
+    memset(s_key_prefix, 0, KEY_PREFIX_LEN);
 }
 
 // Expected REQUEST frame sizes (from HA → emulator), indexed by 2nd char
