@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FRAME_START       0x53  // 'S'
 #define FRAME_END         0x45  // 'E'
 #define BLE_MTU           20
@@ -48,3 +52,7 @@ void nivona_frame_send(const char *cmd,
 bool nivona_frame_handshake_complete(void);
 const uint8_t *nivona_frame_key_prefix(void);  // 2 bytes; valid only after handshake
 void nivona_frame_mark_handshake(const uint8_t key_prefix[2]);
+
+#ifdef __cplusplus
+}
+#endif

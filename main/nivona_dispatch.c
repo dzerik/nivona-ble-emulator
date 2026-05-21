@@ -26,13 +26,19 @@ uint32_t g_diag_frame_parsed = 0;
 
 // ---- BE helpers --------------------------------------------------------
 
+// Decode a big-endian 16-bit value as signed (range: -32768..32767).
+//
+// Nivona HR/HW IDs are signed int16 on the wire; the FSM treats id<0 as
+// the "write" complement of a read id (e.g. HR 100 / HW -100 share one
+// logical register). Callers therefore use this helper, not a uint16
+// version, and downstream code must keep the sign through later casts.
+//
+// Cast each uint8_t to uint32_t before the shift: C integer promotion
+// otherwise raises p[0] to (signed) int, and on a 16-bit-int platform
+// that would left-shift into the sign bit — UB per C11 6.5.7. On ESP32
+// int is 32-bit so the result is safe in practice, but the explicit
+// cast makes the code portable and silences UBSAN.
 static int16_t be16_i(const uint8_t *p) {
-    // Cast each uint8_t to uint32_t before the shift. The C integer
-    // promotion otherwise raises p[0] to (signed) int, and on a 16-bit
-    // int platform that would left-shift into the sign bit — UB per
-    // C11 6.5.7. On ESP32 int is 32-bit so the immediate result is
-    // safe in practice, but the explicit cast makes the code portable
-    // and silences UBSAN.
     return (int16_t)(((uint32_t)p[0] << 8) | (uint32_t)p[1]);
 }
 static void put_be16(uint8_t *p, int16_t v) {

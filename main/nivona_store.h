@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define NIVONA_ALPHA_MAX 64
 
 void nivona_store_init(void);
@@ -24,3 +28,7 @@ void    nivona_store_set_alpha(int16_t id, const uint8_t *data, size_t len);
 
 // Dump all known registers to log (for CLI debugging).
 void    nivona_store_dump(void);
+
+#ifdef __cplusplus
+}
+#endif

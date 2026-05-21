@@ -85,6 +85,79 @@ typedef struct {
 
 static brew_arg_t s_arg;
 
+// Apply post-brew side effects: per-recipe + total + via-app cup counters
+// and the universal 600/610/620/640 maintenance-gauge wear.
+//
+// Cup counters use per-family authoritative stat-ID tables from
+// nivona_stats — we gate every write on `nivona_stats_has_recipe_counter`
+// / `total_id != 0` so we never cache an HR id the real machine doesn't
+// expose for this family. Writing bogus IDs is silently accepted by the
+// emulator but would create ghost stat sensors in any honest HA stats map.
+//
+// Wear gauges (filter/brew-unit/descale) decay at heuristic rates — real
+// firmware-side rates are not exposed by the app. `wear_ticks` source:
+//   - family has `total_id` (700/79X do, 600 doesn't) → use it, persists
+//     across reboots so degradation is consistent
+//   - otherwise → static local counter; not persisted across reboots,
+//     but at least doesn't diverge mid-session if user CLI-switches
+//     family (audit-V3 I6).
+static void apply_wear_after_brew(const brew_arg_t *arg,
+                                  const nivona_family_t *fam) {
+    const nivona_stats_t *stats = nivona_stats_current();
+
+    if (nivona_stats_has_recipe_counter(stats, arg->selector)) {
+        int16_t sel_id = (int16_t)(200 + arg->selector);
+        nivona_store_set_num(sel_id, nivona_store_get_num(sel_id) + 1);
+        ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
+                 arg->selector, (int)sel_id,
+                 (int)nivona_store_get_num(sel_id));
+    } else {
+        ESP_LOGW(TAG, "cup counter: selector %u has no HR counter "
+                 "on family %s — skipped",
+                 arg->selector, fam ? fam->key : "?");
+    }
+    if (stats->total_id != 0) {
+        nivona_store_set_num(stats->total_id,
+            nivona_store_get_num(stats->total_id) + 1);
+        ESP_LOGI(TAG, "total counter: HR %d = %d",
+                 (int)stats->total_id,
+                 (int)nivona_store_get_num(stats->total_id));
+    }
+    // Family-specific "via app" bump — absent on 700/79X/600.
+    if (stats->via_app_id != 0) {
+        nivona_store_set_num(stats->via_app_id,
+            nivona_store_get_num(stats->via_app_id) + 1);
+    }
+
+    // Wear-ticks source (see header comment).
+    static int32_t s_local_wear_tick = 0;
+    int32_t wear_ticks;
+    if (stats->total_id != 0) {
+        wear_ticks = nivona_store_get_num(stats->total_id);
+        s_local_wear_tick = wear_ticks;
+    } else {
+        wear_ticks = ++s_local_wear_tick;
+    }
+
+    // Filter: −1 % per brew, warn flag once below 10 %.
+    int32_t filter_pct = nivona_store_get_num(640);
+    if (filter_pct > 0) nivona_store_set_num(640, filter_pct - 1);
+    if (nivona_store_get_num(640) < 10) nivona_store_set_num(641, 1);
+
+    // Brew-unit clean: −1 % per 2 brews, warn flag below 20 %.
+    if ((wear_ticks & 1) == 0) {
+        int32_t bu = nivona_store_get_num(610);
+        if (bu > 0) nivona_store_set_num(610, bu - 1);
+        if (nivona_store_get_num(610) < 20) nivona_store_set_num(611, 1);
+    }
+    // Descale: −1 % per 5 brews, warn flag below 20 %.
+    if ((wear_ticks % 5) == 0) {
+        int32_t ds = nivona_store_get_num(600);
+        if (ds > 0) nivona_store_set_num(600, ds - 1);
+        if (nivona_store_get_num(600) < 20) nivona_store_set_num(601, 1);
+    }
+}
+
 static void brew_task(void *arg) {
     (void)arg; // args passed via s_arg to avoid intptr_t truncation
 
@@ -191,87 +264,9 @@ static void brew_task(void *arg) {
     nivona_fsm_set_process(ready_code, 0);
     nivona_fsm_set_progress(0);
 
-    // Cup-counter tick — only on non-cancelled completion. Per-family
-    // authoritative stat-ID tables from nivona_stats (ported from
-    // StatisticsFactory.GetAvailableStatisticsFor* in
-    // EugsterMobileApp.decompiled.cs:9146-9306). We gate every write
-    // on `nivona_stats_has_recipe_counter` / `total_id != 0` so we
-    // never cache an HR id the real machine doesn't expose for this
-    // family. Writing bogus IDs is silently accepted by the emulator
-    // but would create ghost stat sensors in any honest HA stats map.
+    // Cup-counter tick + wear gauges — only on non-cancelled completion.
     if (!s_cancel) {
-        const nivona_stats_t *stats = nivona_stats_current();
-        if (nivona_stats_has_recipe_counter(stats, arg_snapshot.selector)) {
-            int16_t sel_id = (int16_t)(200 + arg_snapshot.selector);
-            nivona_store_set_num(sel_id,
-                nivona_store_get_num(sel_id) + 1);
-            ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
-                     arg_snapshot.selector, (int)sel_id,
-                     (int)nivona_store_get_num(sel_id));
-        } else {
-            ESP_LOGW(TAG, "cup counter: selector %u has no HR counter "
-                     "on family %s (per StatisticsFactory) — skipped",
-                     arg_snapshot.selector,
-                     fam ? fam->key : "?");
-        }
-        if (stats->total_id != 0) {
-            nivona_store_set_num(stats->total_id,
-                nivona_store_get_num(stats->total_id) + 1);
-            ESP_LOGI(TAG, "total counter: HR %d = %d",
-                     (int)stats->total_id,
-                     (int)nivona_store_get_num(stats->total_id));
-        }
-        // Family-specific "via app" bump — app-verified HR id
-        // (ProduktebezuegeUeberApp). Absent on 700/79X/600.
-        if (stats->via_app_id != 0) {
-            nivona_store_set_num(stats->via_app_id,
-                nivona_store_get_num(stats->via_app_id) + 1);
-        }
-
-        // Maintenance gauge degradation per brew (600/610/620/640 are
-        // universal across all 5 families per StatisticsFactory
-        // maintenance lists). Rates are heuristic — the real-hw
-        // degradation profile is firmware-side and not in decompile.
-        //   filter    -1 % per brew    (warn < 10)
-        //   BU clean  -1 % per 2 brews (warn < 20)
-        //   descale   -1 % per 5 brews (warn < 20)
-        //
-        // `wear_ticks` drives the parity-and-modulo gauges. Source:
-        //   - If the family has a `total_id` HR counter (Nivona 700/79X
-        //     have one, 600 does not), use that — it persists across
-        //     reboots so the gauges keep degrading consistently.
-        //   - Otherwise use a static local counter as a fallback. The
-        //     local counter is NOT persisted across reboots — that's
-        //     the existing trade-off — but at least it doesn't diverge
-        //     mid-session when the user CLI-switches family (which used
-        //     to wipe `stats->total_id` but leave the local counter
-        //     unchanged, producing nonsense parity decisions).
-        //     (Audit-V3 I6.)
-        static int32_t s_local_wear_tick = 0;
-        int32_t wear_ticks;
-        if (stats->total_id != 0) {
-            wear_ticks = nivona_store_get_num(stats->total_id);
-            // Sync the local counter so a future family-switch back to
-            // a no-total_id family doesn't pick up stale parity.
-            s_local_wear_tick = wear_ticks;
-        } else {
-            wear_ticks = ++s_local_wear_tick;
-        }
-
-        int32_t filter_pct = nivona_store_get_num(640);
-        if (filter_pct > 0) nivona_store_set_num(640, filter_pct - 1);
-        if (nivona_store_get_num(640) < 10) nivona_store_set_num(641, 1);
-
-        if ((wear_ticks & 1) == 0) {
-            int32_t bu = nivona_store_get_num(610);
-            if (bu > 0) nivona_store_set_num(610, bu - 1);
-            if (nivona_store_get_num(610) < 20) nivona_store_set_num(611, 1);
-        }
-        if ((wear_ticks % 5) == 0) {
-            int32_t ds = nivona_store_get_num(600);
-            if (ds > 0) nivona_store_set_num(600, ds - 1);
-            if (nivona_store_get_num(600) < 20) nivona_store_set_num(601, 1);
-        }
+        apply_wear_after_brew(&arg_snapshot, fam);
     }
 
     // After every brew the maintenance orchestrator re-checks all

@@ -3,6 +3,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Machine process states.
 //
 // NOTE (audit V2 — Focus 1): The "ready" and "brewing" codes are
@@ -79,3 +83,7 @@ void nivona_fsm_set_info(uint8_t info);
 
 // Serialize status to 8-byte HX payload (big-endian).
 void nivona_fsm_pack_status(uint8_t out[8]);
+
+#ifdef __cplusplus
+}
+#endif

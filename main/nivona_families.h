@@ -6,9 +6,6 @@
 // convincingly enough for both Home Assistant and the official Nivona
 // Android app to work against whichever family the CLI `family <key>`
 // command has selected.
-//
-// Values extracted from decompiled EugsterMobileApp (v3.8.6) —
-// MakeCoffee()/CheckDiscovered() switch on CoffeeMachineModel.
 
 #pragma once
 
@@ -64,6 +61,10 @@ typedef struct {
     // consumed; HW override handler will read it in a later slice).
     uint8_t fluid_scale;        // 900/1030/1040 = 10, others = 1
     uint8_t has_milk_system;    // 900/1030/1040/8000 = 1, others = 0
+    uint8_t has_powder_lid;     // 1030/1040/8000 = 1, others = 0
+                                // (machines with a ground-coffee chute
+                                //  for decaf shots — affects which
+                                //  MANIP_* prompts the family can raise)
 
     // HE payload byte[1] expected "brew command mode" —
     // EugsterMobileApp.decompiled.cs:6463. Real machine rejects
