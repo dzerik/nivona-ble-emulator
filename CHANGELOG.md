@@ -6,6 +6,107 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.8.0] — 2026-05-21 — Audit V3 sweep (concurrency, safety, clarity)
+
+First post-split release. The emulator was extracted from
+`melitta-ha-integration/esp_emulator/` into its own repo, and we used
+the move as an opportunity to land a deep-review pass on the C
+codebase. Closes **39 findings** from the V3 audit (8 Critical, 18
+Important, 13 Minor) across five themed batches.
+
+### Fixed — Phase 1: concurrency hygiene
+
+- **All FSM modules now synchronise shared state.** `nivona_brew`,
+  `nivona_maint_cycle`, `nivona_gatt`, `nivona_families` previously
+  did unprotected check-then-act / read-modify-write on shared flags
+  and pointers. On dual-core ESP32 a callback running on the NimBLE
+  host task can preempt the app task between the check and the act —
+  this manifests as a race on `s_conn_handle` / `s_active` /
+  `s_current`. Each module now takes either a `SemaphoreHandle_t`
+  mutex (for blocking sections — brew start, cycle start) or a
+  `portMUX_TYPE` spinlock (for O(1) sections — GATT state, family
+  restore).
+- **Brew/cycle arg snapshot under the lock.** `s_arg` / `s_kind`
+  are now copied into a task-local snapshot before the task releases
+  the mutex, so a late writer can't corrupt the in-flight ramp.
+
+### Fixed — Phase 2: memory safety
+
+- **Frame-builder bounds check.** `nivona_frame_send` now refuses to
+  start serialising if `payload_len + KEY_PREFIX_LEN + header/footer
+  > MAX_FRAME_BYTES`, where previously it would silently truncate
+  past the static buffer.
+- **UB-free big-endian shifts.** `put_be16`/`put_be32` and friends
+  cast each `uint8_t` to `uint32_t` before the shift to dodge the
+  C11 6.5.7 left-shift-into-sign-bit UB.
+- **BLE advertising lifecycle.** Always `ble_gap_adv_stop()` before
+  re-starting advertising; previous code could double-start and
+  return BLE_HS_EALREADY from inside the host task callback.
+- **Telnet fd lifecycle.** Replace `close(fd)` from one task while
+  another may be reading with `shutdown(SHUT_RDWR)`; fix
+  `vsnprintf` truncation accounting so we don't drop the null
+  terminator on long log lines.
+
+### Fixed — Phase 3: domain correctness
+
+- **Process-code collision resolved.** `MELITTA_PROC_FILTER_INSERT = 11`
+  collided with the non-8000 Nivona brewing code (11). The cycle
+  task now substitutes `MELITTA_PROC_BUSY = 99` for FILTER_INSERT
+  so the HX stream never confuses a filter cycle for a brew.
+- **Wear-tick consistency across family switches.** Maintenance gauge
+  parity (BU clean every 2 brews, descale every 5) now reads
+  `stats->total_id` when available and syncs to a local fallback
+  counter, so a mid-session `family` switch doesn't reset parity to
+  zero or pick up stale parity from the previous family.
+- **Family-aware stats writes.** Every `nivona_store_set_num` for a
+  cup/total/via-app counter is gated on the family's authoritative
+  stat-ID table; we never persist HR ids the real machine doesn't
+  expose for the selected family.
+
+### Fixed — Phase 4: encapsulation and log hygiene
+
+- `g_own_addr_type` → file-static with getter/setter.
+- `NIVONA_RC4_KEY` → file-static, exposed via
+  `nivona_rc4_with_master_key()` wrapper — both crypto call sites
+  now route through it instead of touching the key bytes directly.
+- Session-key logging downgraded `INFO → DEBUG` so a serial-attached
+  developer doesn't see the live key in their console by default.
+- Frame parser pre-handshake gate: unencrypted single-char ACK/NACK
+  are only honoured before the handshake completes.
+- Frame parser reentrancy guard: `try_parse` enters via a single
+  `goto out:` epilogue so the static plaintext buffer can't be
+  observed mid-decrypt.
+- AD02 GATT char: removed `BLE_GATT_CHR_F_READ` (notify-only on
+  the real machine; the stub READ was returning empty payloads).
+- NVS load-path no longer re-persists the values it just read.
+  `nivona_store_set_num` was split into a memory-only setter
+  (`set_num_mem`, used by `nvs_load_all`) and the public persisting
+  version, eliminating ~50 open/commit/close cycles + flash wear
+  per cold start.
+- WiFi reason-aware reconnect with exponential backoff (capped at
+  30 s) and log throttling so a flapping AP can't fill the log
+  buffer.
+
+### Refactored — Phase 5: clarity
+
+- New `has_powder_lid` field on `nivona_family_t` replaces the
+  strcmp-chain in `nivona_maint_family_mask`. Adding a new family
+  is one struct row.
+- `apply_wear_after_brew` helper extracted from `brew_task` — the
+  task body is now ramp-only; wear policy lives in one place.
+- `OTA_HTTP_PORT` constant for the `cfg.server_port = 80` literal.
+- `extern "C"` guards added to all remaining public headers.
+- `be16_i` doc expanded to explain *why* it returns signed (HR/HW
+  ids encode write-complements as negative on the wire).
+
+### Notes for users coming from 0.7.x
+
+- No protocol/wire-format change. Existing HA integrations and the
+  Nivona Android app see byte-identical BLE traffic.
+- NVS layout unchanged.
+- Build: still ESP-IDF v5.x against ESP32-WROOM-32. Source files
+  shuffled internally; `idf.py build` from the repo root just works.
+
 ## [0.7.0] — 2026-04-14 — Audit V2 fixes (decompile-grounded)
 
 Closes **10 prioritised findings** from
