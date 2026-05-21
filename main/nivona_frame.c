@@ -255,13 +255,20 @@ void nivona_frame_send(const char *cmd,
                        const uint8_t *payload, size_t payload_len,
                        bool include_key_prefix,
                        bool encrypt) {
-    static uint8_t frame[MAX_FRAME_BYTES];  // static: NimBLE task stack is tight
+    // STACK-allocated, not static. nivona_frame_send is called from
+    //   - the NimBLE host task (ACK/NACK/response inside dispatch)
+    //   - brew_task / cycle_task (push_status every 500 ms)
+    //   - the CLI / telnet task (cmd_send et al.)
+    // A static buffer here used to be torn whenever two of those
+    // overlapped — protocol-corrupt frames on the wire. MAX_FRAME_BYTES
+    // is 512 and every caller task has ≥ 4 kB of stack, so the buffer
+    // fits comfortably with no synchronisation cost.
+    uint8_t frame[MAX_FRAME_BYTES];
     size_t pos = 0;
     size_t cmd_len = cmd ? strlen(cmd) : 0;
 
-    // Bounds check BEFORE any write into the static frame[] — overflow
-    // here corrupts the buffer for every subsequent caller because the
-    // buffer is static. Compute the total bytes we'll write:
+    // Bounds check BEFORE any write into frame[]. Compute the total
+    // bytes we'll write:
     //   FRAME_START (1) + cmd (cmd_len) +
     //   optional key prefix (KEY_PREFIX_LEN) +
     //   payload (payload_len) +

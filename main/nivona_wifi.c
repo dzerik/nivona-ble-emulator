@@ -14,6 +14,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,6 +23,18 @@
 static const char *TAG = "nivona_wifi";
 static volatile bool s_connected = false;
 static uint8_t s_consecutive_failures = 0;
+// One-shot timer that fires `esp_wifi_connect` after the back-off
+// delay. We MUST NOT vTaskDelay inside the event handler — ESP-IDF
+// dispatches events on the system event loop task, and blocking it
+// stalls every other event (including IP_EVENT_STA_GOT_IP, which we
+// need to see if a retry succeeds). The timer callback runs on the
+// esp_timer task instead, so the event loop stays free.
+static esp_timer_handle_t s_reconnect_timer = NULL;
+
+static void reconnect_timer_cb(void *arg) {
+    (void)arg;
+    esp_wifi_connect();
+}
 
 // Map ESP-IDF WIFI_REASON_* codes to a human-readable label for logs.
 // Only the most common diagnostics — anything else falls through to a
@@ -66,10 +79,24 @@ static void event_handler(void *arg, esp_event_base_t base,
                      r, reason_label(r), (unsigned)s_consecutive_failures);
         }
         // Back-off proportional to consecutive failures, capped at 30s.
+        // Scheduled via esp_timer so the system event loop task (which
+        // dispatches *this* callback) stays unblocked — vTaskDelay
+        // here would stall every other Wi-Fi/IP event for up to 30 s.
         uint32_t delay_ms = 500u * (uint32_t)s_consecutive_failures;
         if (delay_ms > 30000u) delay_ms = 30000u;
-        if (delay_ms > 0) vTaskDelay(pdMS_TO_TICKS(delay_ms));
-        esp_wifi_connect();
+        if (delay_ms == 0) {
+            esp_wifi_connect();
+        } else if (s_reconnect_timer != NULL) {
+            // stop+start because esp_timer_start_once errors if the
+            // timer is already armed (e.g. closely-spaced disconnects).
+            esp_timer_stop(s_reconnect_timer);
+            esp_timer_start_once(s_reconnect_timer,
+                                 (uint64_t)delay_ms * 1000ULL);
+        } else {
+            // Timer not yet created (init failure?) — fall back to
+            // immediate reconnect; better to spin than stay offline.
+            esp_wifi_connect();
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_consecutive_failures = 0;
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
@@ -82,6 +109,15 @@ int nivona_wifi_init(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
+
+    // Create the reconnect timer up front so the disconnect handler
+    // can arm it. Args (.callback only) keep the default ISR-safe
+    // mode; we don't need higher priority than the esp_timer task.
+    const esp_timer_create_args_t targs = {
+        .callback = &reconnect_timer_cb,
+        .name     = "wifi_reconnect",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_reconnect_timer));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
