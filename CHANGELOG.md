@@ -6,6 +6,43 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.8.2] — 2026-05-21 — V3 pending items + reconstructed audit doc
+
+Closes the three "accepted-for-later" items from 0.8.1 and lands a
+written audit record so future sessions can verify coverage from
+disk instead of context.
+
+### Fixed
+
+- **Session key no longer leaks via `/diag`** (I3). The HTTP
+  diagnostic endpoint exposed `last_decrypt` — first 32 plaintext
+  bytes of the most recent incoming frame, including the 2-byte
+  session key prefix that authenticates every subsequent frame.
+  Now skipped at capture time; the diagnostic still shows the cmd
+  opcode and payload (the actually-useful debug content).
+- **Telnet log no longer races into the wrong fd** (I2).
+  `telnet_vprintf` snapshotted `s_client_fd` under the mutex but
+  did the `send()` after releasing — lwIP could recycle the fd
+  number between snapshot and send. Restructured so `send()`
+  happens inside the mutex; paired with also holding the mutex
+  across `close()` in `client_task` cleanup.
+- **Fresh connection always requires fresh HU** (C3 defense-in-
+  depth). `nivona_frame_reset` (called on disconnect) now clears
+  `s_handshake_done` and zeroes `s_key_prefix`, so a new peer can
+  never inherit the previous peer's session key. After tracing the
+  reviewer's flagged race, the cross-task race itself was a false
+  positive — every writer ends up on the NimBLE host task — but
+  clearing on disconnect is the right thing regardless.
+
+### Added
+
+- `docs/AUDIT_V3.md` — reconstructed table of every V3 finding
+  (Phases 1-5) plus Phase 6 follow-up and Phase 7 closure. Maps
+  every ID to its fix commit so future reviewers can spot-check
+  coverage without spelunking `git log`.
+
+No wire-format / NVS layout change vs 0.8.1.
+
 ## [0.8.1] — 2026-05-21 — V3 follow-up patch
 
 Independent code review post-0.8.0 (no audit context) flagged four
