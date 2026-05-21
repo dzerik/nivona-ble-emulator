@@ -1,7 +1,5 @@
 #include "nivona_maint.h"
 
-#include <string.h>
-
 #include "nivona_consumables.h"
 #include "nivona_families.h"
 #include "nivona_fsm.h"
@@ -30,18 +28,19 @@ uint32_t nivona_maint_family_mask(const char *family_key) {
     uint32_t m = mask_common();
     if (family_key == NULL) return m;
 
+    const nivona_family_t *fam = nivona_family_find(family_key);
+    if (fam == NULL) return m;
+
     // Pro-model families (900/1030/1040/8000) have milk systems —
     // they can prompt MOVE_CUP_TO_FROTHER during milk drinks.
-    const nivona_family_t *fam = nivona_family_find(family_key);
-    if (fam != NULL && fam->has_milk_system) {
+    if (fam->has_milk_system) {
         m |= BIT(MANIP_MOVE_CUP);
     }
-    // 1030 / 1040 typically have a ground-coffee powder chute
-    // (for decaf shots). 600/700/79x do not — leave those clear.
-    if (family_key != NULL &&
-        (strcmp(family_key, "1030") == 0 ||
-         strcmp(family_key, "1040") == 0 ||
-         strcmp(family_key, "8000") == 0)) {
+    // Families with a ground-coffee powder chute (decaf shots) can
+    // raise CLOSE_POWDER_LID / FILL_POWDER prompts. Driven from the
+    // family table rather than a hardcoded key list so adding a new
+    // family is one struct row, not an audit of every consumer.
+    if (fam->has_powder_lid) {
         m |= BIT(MANIP_CLOSE_POWDER_LID) | BIT(MANIP_FILL_POWDER);
     }
     return m;

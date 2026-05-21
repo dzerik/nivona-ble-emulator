@@ -4,9 +4,11 @@
 #include "nivona_fsm.h"
 #include "nivona_maint.h"
 #include "nivona_maint_cycle.h"
+#include "nivona_stats.h"
 #include "nivona_store.h"
 #include "nivona_brew.h"
 
+#include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -360,28 +362,62 @@ static int cmd_maint(int argc, char **argv) {
 
 // ---- stats (Phase B-lite) --------------------------------------------
 
+// Universal maintenance gauges (same HR ids on every Nivona family
+// per StatisticsFactory) — shown unconditionally so the user sees
+// the current cycle health regardless of which family is active.
+static const struct { int16_t id; const char *label; } GAUGE_IDS[] = {
+    {600, "descale_%"},      {601, "descale_warn"},
+    {610, "brew_unit_%"},    {611, "brew_unit_warn"},
+    {620, "frother_%"},      {621, "frother_warn"},
+    {640, "filter_%"},       {641, "filter_warn"},
+};
+
 static int cmd_stats(int argc, char **argv) {
     (void)argc; (void)argv;
-    printf("Stat counters (HR id -> value):\n");
-    static const struct { int16_t id; const char *label; } STAT_TABLE[] = {
-        {200, "espresso"}, {201, "coffee/cream"}, {202, "lungo/americano"},
-        {203, "americano/cappuccino"}, {204, "cappuccino/latte"},
-        {205, "latte_macchiato"}, {206, "milk"}, {207, "hot_water"},
-        {208, "my_coffee"}, {213, "total_beverages"},
-        {214, "clean_coffee_system"}, {215, "clean_frother"},
-        {216, "rinse_cycles"}, {219, "filter_changes"},
-        {220, "descaling"}, {221, "beverages_via_app"},
-        {600, "descale_%"}, {601, "descale_warn"},
-        {610, "brew_unit_%"}, {611, "brew_unit_warn"},
-        {620, "frother_%"}, {621, "frother_warn"},
-        {640, "filter_%"}, {641, "filter_warn"},
+    const nivona_stats_t *s = nivona_stats_current();
+    if (s == NULL) {
+        printf("no stats table for current family\n");
+        return 1;
+    }
+    printf("Stat counters for family %s (HR id -> value):\n", s->family_key);
+
+    // Per-recipe counters: walk the bitmap on the active family.
+    // Replaces the hardcoded HR-id list that previously misrepresented
+    // 1000-family counters as 8000-family ones. (Audit-V3 I9.)
+    for (uint8_t sel = 0; sel < 32; sel++) {
+        if (!nivona_stats_has_recipe_counter(s, sel)) continue;
+        int16_t id = (int16_t)(200 + sel);
+        int32_t v = nivona_store_get_num(id);
+        if (v == 0) continue;
+        printf("  %3d  recipe selector %-12u %d\n", id, (unsigned)sel, (int)v);
+    }
+
+    // Cumulative/maintenance HR ids vary by family — pick them from
+    // the per-family stats table, not a global list.
+    static const struct { const char *label; size_t offset; } SUM_FIELDS[] = {
+        {"total_beverages",    offsetof(nivona_stats_t, total_id)},
+        {"clean_coffee_sys",   offsetof(nivona_stats_t, clean_coffee_id)},
+        {"clean_frother",      offsetof(nivona_stats_t, clean_frother_id)},
+        {"rinse_cycles",       offsetof(nivona_stats_t, rinse_id)},
+        {"rinse_frother",      offsetof(nivona_stats_t, rinse_frother_id)},
+        {"rinse_filter",       offsetof(nivona_stats_t, rinse_filter_id)},
+        {"filter_changes",     offsetof(nivona_stats_t, filter_change_id)},
+        {"descaling",          offsetof(nivona_stats_t, descale_id)},
+        {"beverages_via_app",  offsetof(nivona_stats_t, via_app_id)},
+        {"pot_count",          offsetof(nivona_stats_t, pot_id)},
     };
-    for (size_t i = 0; i < sizeof(STAT_TABLE)/sizeof(STAT_TABLE[0]); i++) {
-        int32_t v = nivona_store_get_num(STAT_TABLE[i].id);
-        if (v != 0 || STAT_TABLE[i].id >= 600) {  // always show gauges
-            printf("  %3d  %-22s %d\n",
-                   STAT_TABLE[i].id, STAT_TABLE[i].label, (int)v);
-        }
+    for (size_t i = 0; i < sizeof(SUM_FIELDS)/sizeof(SUM_FIELDS[0]); i++) {
+        int16_t id = *(const int16_t *)((const char *)s + SUM_FIELDS[i].offset);
+        if (id == 0) continue;  // not present on this family
+        int32_t v = nivona_store_get_num(id);
+        printf("  %3d  %-22s %d\n", id, SUM_FIELDS[i].label, (int)v);
+    }
+
+    // Universal gauges (always shown — they're maintenance health).
+    for (size_t i = 0; i < sizeof(GAUGE_IDS)/sizeof(GAUGE_IDS[0]); i++) {
+        int32_t v = nivona_store_get_num(GAUGE_IDS[i].id);
+        printf("  %3d  %-22s %d\n",
+               GAUGE_IDS[i].id, GAUGE_IDS[i].label, (int)v);
     }
     return 0;
 }

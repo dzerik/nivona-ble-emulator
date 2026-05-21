@@ -4,6 +4,7 @@
 #include "nivona_fsm.h"
 #include "nivona_frame.h"
 #include "nivona_maint.h"
+#include "nivona_maint_cycle.h"
 #include "nivona_stats.h"
 #include "nivona_store.h"
 
@@ -14,8 +15,15 @@
 
 static const char *TAG = "nivona_brew";
 
+// All mutations of s_task / s_active / s_cancel / s_arg happen under
+// s_lock — without it the check-then-set in nivona_brew_start races
+// with the cleanup at the bottom of brew_task on dual-core ESP32.
+// Taking + releasing the mutex also implies acquire/release fences,
+// which is exactly what we need so brew_task observes the s_arg value
+// the caller wrote before xTaskCreate.
+static SemaphoreHandle_t s_lock = NULL;
 static TaskHandle_t s_task = NULL;
-static volatile bool s_active = false;
+static bool s_active = false;
 static volatile bool s_cancel = false;
 
 // Send an unsolicited HX status notification so subscribers see progress.
@@ -77,8 +85,90 @@ typedef struct {
 
 static brew_arg_t s_arg;
 
+// Apply post-brew side effects: per-recipe + total + via-app cup counters
+// and the universal 600/610/620/640 maintenance-gauge wear.
+//
+// Cup counters use per-family authoritative stat-ID tables from
+// nivona_stats — we gate every write on `nivona_stats_has_recipe_counter`
+// / `total_id != 0` so we never cache an HR id the real machine doesn't
+// expose for this family. Writing bogus IDs is silently accepted by the
+// emulator but would create ghost stat sensors in any honest HA stats map.
+//
+// Wear gauges (filter/brew-unit/descale) decay at heuristic rates — real
+// firmware-side rates are not exposed by the app. `wear_ticks` source:
+//   - family has `total_id` (700/79X do, 600 doesn't) → use it, persists
+//     across reboots so degradation is consistent
+//   - otherwise → static local counter; not persisted across reboots,
+//     but at least doesn't diverge mid-session if user CLI-switches
+//     family (audit-V3 I6).
+static void apply_wear_after_brew(const brew_arg_t *arg,
+                                  const nivona_family_t *fam) {
+    const nivona_stats_t *stats = nivona_stats_current();
+
+    if (nivona_stats_has_recipe_counter(stats, arg->selector)) {
+        int16_t sel_id = (int16_t)(200 + arg->selector);
+        nivona_store_set_num(sel_id, nivona_store_get_num(sel_id) + 1);
+        ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
+                 arg->selector, (int)sel_id,
+                 (int)nivona_store_get_num(sel_id));
+    } else {
+        ESP_LOGW(TAG, "cup counter: selector %u has no HR counter "
+                 "on family %s — skipped",
+                 arg->selector, fam ? fam->key : "?");
+    }
+    if (stats->total_id != 0) {
+        nivona_store_set_num(stats->total_id,
+            nivona_store_get_num(stats->total_id) + 1);
+        ESP_LOGI(TAG, "total counter: HR %d = %d",
+                 (int)stats->total_id,
+                 (int)nivona_store_get_num(stats->total_id));
+    }
+    // Family-specific "via app" bump — absent on 700/79X/600.
+    if (stats->via_app_id != 0) {
+        nivona_store_set_num(stats->via_app_id,
+            nivona_store_get_num(stats->via_app_id) + 1);
+    }
+
+    // Wear-ticks source (see header comment).
+    static int32_t s_local_wear_tick = 0;
+    int32_t wear_ticks;
+    if (stats->total_id != 0) {
+        wear_ticks = nivona_store_get_num(stats->total_id);
+        s_local_wear_tick = wear_ticks;
+    } else {
+        wear_ticks = ++s_local_wear_tick;
+    }
+
+    // Filter: −1 % per brew, warn flag once below 10 %.
+    int32_t filter_pct = nivona_store_get_num(640);
+    if (filter_pct > 0) nivona_store_set_num(640, filter_pct - 1);
+    if (nivona_store_get_num(640) < 10) nivona_store_set_num(641, 1);
+
+    // Brew-unit clean: −1 % per 2 brews, warn flag below 20 %.
+    if ((wear_ticks & 1) == 0) {
+        int32_t bu = nivona_store_get_num(610);
+        if (bu > 0) nivona_store_set_num(610, bu - 1);
+        if (nivona_store_get_num(610) < 20) nivona_store_set_num(611, 1);
+    }
+    // Descale: −1 % per 5 brews, warn flag below 20 %.
+    if ((wear_ticks % 5) == 0) {
+        int32_t ds = nivona_store_get_num(600);
+        if (ds > 0) nivona_store_set_num(600, ds - 1);
+        if (nivona_store_get_num(600) < 20) nivona_store_set_num(601, 1);
+    }
+}
+
 static void brew_task(void *arg) {
     (void)arg; // args passed via s_arg to avoid intptr_t truncation
+
+    // Snapshot s_arg under the lock so the rest of the task can run on
+    // a local copy and we don't hold the lock across the whole brew.
+    // Taking the mutex here is also the acquire fence that pairs with
+    // the release in nivona_brew_start().
+    brew_arg_t arg_snapshot;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    arg_snapshot = s_arg;
+    xSemaphoreGive(s_lock);
 
     // Snapshot current family's codes at brew start — if the CLI
     // switches family mid-brew the ramp still finishes consistently.
@@ -86,24 +176,24 @@ static void brew_task(void *arg) {
     const int16_t brew_code = fam->process_brewing;
     const int16_t ready_code = fam->process_ready;
 
-    const nivona_recipe_t *recipe = s_arg.recipe;
+    const nivona_recipe_t *recipe = arg_snapshot.recipe;
     const char *name = recipe ? recipe->name : "?";
     nivona_recipe_category_t cat =
         recipe ? recipe->category : NIVONA_CAT_COFFEE;
     const brew_ramp_t *ramp = find_ramp(cat);
 
     uint32_t total_ms = ramp->total_ms;
-    if (s_arg.two_cups) total_ms *= 2;
+    if (arg_snapshot.two_cups) total_ms *= 2;
 
     ESP_LOGI(TAG, "brew start family=%s selector=%u recipe=%s cat=%d "
              "total=%ums stages=%u brew_code=%d",
-             fam->key, s_arg.selector, name, (int)cat,
+             fam->key, arg_snapshot.selector, name, (int)cat,
              (unsigned)total_ms, (unsigned)ramp->stage_count,
              brew_code);
 
     // Announce brewing state — the Nivona app re-reads HX ~650 ms after
     // HE and requires the family-specific brewing code (4 / 11).
-    nivona_fsm_set_process(brew_code, (int16_t)s_arg.selector);
+    nivona_fsm_set_process(brew_code, (int16_t)arg_snapshot.selector);
     nivona_fsm_set_progress(0);
     nivona_fsm_set_info(0);
     push_status();
@@ -174,73 +264,9 @@ static void brew_task(void *arg) {
     nivona_fsm_set_process(ready_code, 0);
     nivona_fsm_set_progress(0);
 
-    // Cup-counter tick — only on non-cancelled completion. Per-family
-    // authoritative stat-ID tables from nivona_stats (ported from
-    // StatisticsFactory.GetAvailableStatisticsFor* in
-    // EugsterMobileApp.decompiled.cs:9146-9306). We gate every write
-    // on `nivona_stats_has_recipe_counter` / `total_id != 0` so we
-    // never cache an HR id the real machine doesn't expose for this
-    // family. Writing bogus IDs is silently accepted by the emulator
-    // but would create ghost stat sensors in any honest HA stats map.
+    // Cup-counter tick + wear gauges — only on non-cancelled completion.
     if (!s_cancel) {
-        const nivona_stats_t *stats = nivona_stats_current();
-        if (nivona_stats_has_recipe_counter(stats, s_arg.selector)) {
-            int16_t sel_id = (int16_t)(200 + s_arg.selector);
-            nivona_store_set_num(sel_id,
-                nivona_store_get_num(sel_id) + 1);
-            ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
-                     s_arg.selector, (int)sel_id,
-                     (int)nivona_store_get_num(sel_id));
-        } else {
-            ESP_LOGW(TAG, "cup counter: selector %u has no HR counter "
-                     "on family %s (per StatisticsFactory) — skipped",
-                     s_arg.selector,
-                     fam ? fam->key : "?");
-        }
-        if (stats->total_id != 0) {
-            nivona_store_set_num(stats->total_id,
-                nivona_store_get_num(stats->total_id) + 1);
-            ESP_LOGI(TAG, "total counter: HR %d = %d",
-                     (int)stats->total_id,
-                     (int)nivona_store_get_num(stats->total_id));
-        }
-        // Family-specific "via app" bump — app-verified HR id
-        // (ProduktebezuegeUeberApp). Absent on 700/79X/600.
-        if (stats->via_app_id != 0) {
-            nivona_store_set_num(stats->via_app_id,
-                nivona_store_get_num(stats->via_app_id) + 1);
-        }
-
-        // Maintenance gauge degradation per brew (600/610/620/640 are
-        // universal across all 5 families per StatisticsFactory
-        // maintenance lists). Rates are heuristic — the real-hw
-        // degradation profile is firmware-side and not in decompile.
-        //   filter    -1 % per brew    (warn < 10)
-        //   BU clean  -1 % per 2 brews (warn < 20)
-        //   descale   -1 % per 5 brews (warn < 20)
-        int32_t wear_ticks = (stats->total_id != 0)
-            ? nivona_store_get_num(stats->total_id)
-            : (nivona_store_get_num(610) == 0 ? 1 : 0); // fallback edge
-        // Use a monotonic local counter if the family has no total:
-        if (stats->total_id == 0) {
-            static int32_t s_local_wear_tick = 0;
-            wear_ticks = ++s_local_wear_tick;
-        }
-
-        int32_t filter_pct = nivona_store_get_num(640);
-        if (filter_pct > 0) nivona_store_set_num(640, filter_pct - 1);
-        if (nivona_store_get_num(640) < 10) nivona_store_set_num(641, 1);
-
-        if ((wear_ticks & 1) == 0) {
-            int32_t bu = nivona_store_get_num(610);
-            if (bu > 0) nivona_store_set_num(610, bu - 1);
-            if (nivona_store_get_num(610) < 20) nivona_store_set_num(611, 1);
-        }
-        if ((wear_ticks % 5) == 0) {
-            int32_t ds = nivona_store_get_num(600);
-            if (ds > 0) nivona_store_set_num(600, ds - 1);
-            if (nivona_store_get_num(600) < 20) nivona_store_set_num(601, 1);
-        }
+        apply_wear_after_brew(&arg_snapshot, fam);
     }
 
     // After every brew the maintenance orchestrator re-checks all
@@ -251,20 +277,30 @@ static void brew_task(void *arg) {
     nivona_maint_reevaluate();
     push_status();
 
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_active = false;
     s_cancel = false;
     s_task = NULL;
+    xSemaphoreGive(s_lock);
+
     ESP_LOGI(TAG, "brew done");
     vTaskDelete(NULL);
 }
 
-void nivona_brew_init(void) { /* nothing yet */ }
+void nivona_brew_init(void) {
+    if (s_lock == NULL) {
+        s_lock = xSemaphoreCreateMutex();
+    }
+}
 
 bool nivona_brew_start(int16_t process_value, bool two_cups) {
-    if (s_active) {
-        ESP_LOGW(TAG, "brew already active, rejecting");
+    if (s_lock == NULL) {
+        // Defensive: init must run first. We log loudly rather than
+        // silently allow the unsafe path.
+        ESP_LOGE(TAG, "nivona_brew_start called before nivona_brew_init");
         return false;
     }
+
     // Resolve selector → recipe descriptor in the current family.
     // process_value carries the selector byte from HE payload[3].
     const nivona_family_t *fam = nivona_family_current();
@@ -275,6 +311,16 @@ bool nivona_brew_start(int16_t process_value, bool two_cups) {
                  sel, fam->key);
         return false;
     }
+
+    // Refuse brew while a maintenance cycle is running. Mirror of the
+    // brew-active check that nivona_maint_cycle_start already has on
+    // its own side; without this guard concurrent brew+cycle interleave
+    // their nivona_fsm_set_process calls and corrupt the HX stream.
+    if (nivona_maint_cycle_active()) {
+        ESP_LOGW(TAG, "brew rejected: maintenance cycle in progress");
+        return false;
+    }
+
     // Refuse brew while a hard prompt is active — a real machine
     // would reject HE with its own error. Soft prompts (FLUSH /
     // MOVE_CUP) are fine because the brew itself flushes them.
@@ -287,21 +333,48 @@ bool nivona_brew_start(int16_t process_value, bool two_cups) {
         return false;
     }
 
+    // Atomic check-and-set on s_active + s_arg under one lock. Without
+    // this, two callers (e.g. CLI + dispatcher) could both pass the
+    // s_active check, both write s_arg, and both spawn brew_task.
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "brew already active, rejecting");
+        return false;
+    }
     s_arg.selector = sel;
     s_arg.recipe = recipe;
     s_arg.two_cups = two_cups;
-
     s_active = true;
     s_cancel = false;
-    xTaskCreate(brew_task, "nivona_brew", 4096,
-                NULL, 5, &s_task);
+    TaskHandle_t new_task = NULL;
+    BaseType_t rc = xTaskCreate(brew_task, "nivona_brew", 4096,
+                                NULL, 5, &new_task);
+    if (rc != pdPASS) {
+        s_active = false;
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(TAG, "xTaskCreate failed: %d", (int)rc);
+        return false;
+    }
+    s_task = new_task;
+    xSemaphoreGive(s_lock);
     return true;
 }
 
 void nivona_brew_cancel(void) {
-    if (!s_active) return;
-    s_cancel = true;
-    ESP_LOGI(TAG, "brew cancel requested");
+    if (s_lock == NULL) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active) {
+        s_cancel = true;
+        ESP_LOGI(TAG, "brew cancel requested");
+    }
+    xSemaphoreGive(s_lock);
 }
 
-bool nivona_brew_active(void) { return s_active; }
+bool nivona_brew_active(void) {
+    if (s_lock == NULL) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool active = s_active;
+    xSemaphoreGive(s_lock);
+    return active;
+}

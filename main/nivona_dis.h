@@ -7,6 +7,10 @@
 // Setting per-family values affects the model displayed by the app and
 // the HA integration's fallback family detection.
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int nivona_dis_init(void);
 
 // Set DIS values. Pass NULL to leave a field at its current value.
@@ -16,3 +20,7 @@ void nivona_dis_set(const char *manufacturer,
                     const char *hw_rev,
                     const char *fw_rev,
                     const char *sw_rev);
+
+#ifdef __cplusplus
+}
+#endif

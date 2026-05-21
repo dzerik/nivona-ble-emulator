@@ -11,7 +11,17 @@
 
 static const char *TAG = "nivona_ble";
 
-uint8_t g_own_addr_type;
+// Internal — read via the public getter nivona_ble_own_addr_type().
+// Written exactly once in on_sync(); after that any code path that
+// needs it goes through the getter.
+static uint8_t s_own_addr_type;
+
+uint8_t nivona_ble_own_addr_type(void) { return s_own_addr_type; }
+
+// Set by the on_sync handler — main.c calls nivona_ble_own_addr_set
+// before starting NimBLE so the random-static address is committed
+// before adv_start.
+void nivona_ble_own_addr_set(uint8_t t) { s_own_addr_type = t; }
 
 // Must match the service UUID in nivona_gatt.c (LE byte order)
 static const ble_uuid128_t ADV_SVC_UUID = BLE_UUID128_INIT(
@@ -108,6 +118,18 @@ void nivona_ble_start_advertising(void) {
     // espressif/esp-idf#11001). Re-setting here would be silently ignored.
     const char *name = ble_svc_gap_device_name();
 
+    // Defensive: idempotently stop any previous adv before we start a
+    // new one. On a failed-connect restart (BLE_GAP_EVENT_CONNECT with
+    // status != 0) the controller can still be in adv-active state for
+    // a brief window, and ble_gap_adv_start() would then return
+    // BLE_HS_EALREADY. Calling adv_stop first returns BLE_HS_EALREADY
+    // when adv wasn't running, which we deliberately ignore — both
+    // outcomes leave us in the desired "adv stopped" state.
+    int stop_rc = ble_gap_adv_stop();
+    if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY) {
+        ESP_LOGW(TAG, "adv_stop rc=%d before restart (ignored)", stop_rc);
+    }
+
     // Primary adv data: flags + short name + service UUID
     struct ble_hs_adv_fields fields = {0};
     // Primary ADV budget is 31 bytes. Packing:
@@ -156,7 +178,7 @@ void nivona_ble_start_advertising(void) {
     adv.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-    rc = ble_gap_adv_start(g_own_addr_type, NULL, BLE_HS_FOREVER,
+    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER,
                            &adv, gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_start rc=%d", rc);

@@ -79,12 +79,31 @@ static void copy_field(char *dst, size_t cap, const char *src) {
     dst[n] = 0;
 }
 
+// CONTRACT: nivona_dis_set MUST be called before NimBLE is up
+// (i.e. before nimble_port_freertos_init / nivona_ble_init). The DIS
+// strings are read from access_string() on the NimBLE host task with
+// no synchronization, so mutating them concurrently with an in-flight
+// GATT read would tear a 15-byte serial like 8107000001----- mid-copy.
+//
+// The runtime cost of a mutex on every DIS read is real (DIS is read
+// at every connect), so we trade it for a lifecycle invariant: set
+// once at init, never again. Calling this after init logs a warning
+// loud enough that the developer notices and reaches for a real
+// mutex if they actually need runtime updates.
 void nivona_dis_set(const char *mfr, const char *model, const char *sn,
                     const char *hw, const char *fw, const char *sw) {
+    static bool s_dis_initialised = false;
+    if (s_dis_initialised) {
+        ESP_LOGW(TAG, "nivona_dis_set called after BLE is up — "
+                      "concurrent GATT reads can tear the strings. "
+                      "Either restart NimBLE after this set or move "
+                      "the call before nivona_ble_init.");
+    }
     copy_field(s_manufacturer, DIS_FIELD_MAX, mfr);
     copy_field(s_model,        DIS_FIELD_MAX, model);
     copy_field(s_serial,       DIS_FIELD_MAX, sn);
     copy_field(s_hw_rev,       DIS_FIELD_MAX, hw);
     copy_field(s_fw_rev,       DIS_FIELD_MAX, fw);
     copy_field(s_sw_rev,       DIS_FIELD_MAX, sw);
+    s_dis_initialised = true;
 }

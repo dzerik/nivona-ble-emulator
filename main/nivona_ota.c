@@ -9,7 +9,11 @@
 
 static const char *TAG = "nivona_ota";
 
-#define OTA_BUF_SZ 2048
+#define OTA_BUF_SZ      2048
+// Standard HTTP port — same as ESPHome's HTTP server. Kept as a named
+// constant so the WebUI / OTA / status endpoints all agree on it without
+// a magic literal in httpd_config_t init.
+#define OTA_HTTP_PORT   80
 
 extern uint32_t g_diag_connects, g_diag_disconnects, g_diag_subscribes;
 extern uint32_t g_diag_ad01_writes, g_diag_ad03_writes;
@@ -134,7 +138,7 @@ static esp_err_t reboot_post(httpd_req_t *req) {
 
 int nivona_ota_start(void) {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port = 80;
+    cfg.server_port = OTA_HTTP_PORT;
     cfg.max_uri_handlers = 5;
     cfg.recv_wait_timeout = 30;
     cfg.send_wait_timeout = 30;

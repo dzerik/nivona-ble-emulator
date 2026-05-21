@@ -41,9 +41,11 @@ static uint8_t checksum(const uint8_t *data, size_t len) {
 static bool cmd_info(const char *buf, size_t avail,
                      int *out_len, bool *out_encrypted) {
     if (avail < 1) return false;
-    // Unencrypted single-char commands
-    if (avail >= 1 && (buf[0] == 'A' || buf[0] == 'N')) {
-        // Only accept if the 2nd byte isn't part of a known 2-char code
+    // Unencrypted single-char ACK/NAK — only valid BEFORE the handshake
+    // completes. After we're encrypted, byte 0x41 ('A') / 0x4E ('N') is
+    // a perfectly normal first ciphertext byte and must not be
+    // interpreted as a stale ACK. (Audit-V3 finding I-Block1.)
+    if (!s_handshake_done && (buf[0] == 'A' || buf[0] == 'N')) {
         *out_len = 1;
         *out_encrypted = false;
         return true;
@@ -68,15 +70,33 @@ uint8_t  g_diag_last_recv_cs = 0;
 uint8_t  g_diag_last_expect_cs = 0;
 
 static void try_parse(void) {
+    // Non-reentrant: plain[] and cs_in[] are static so they survive
+    // across calls — that's a deliberate choice (NimBLE host stack
+    // is too tight for 512-byte locals). The trade-off is that
+    // try_parse MUST NOT be called from inside itself or from any
+    // handler that re-feeds bytes into the parser. Catch that here
+    // explicitly so a future regression doesn't silently overwrite
+    // a parent invocation's buffers. (Audit-V3 finding I-Block1.)
+    static bool s_in_parse = false;
+    if (s_in_parse) {
+        ESP_LOGE(TAG, "try_parse called recursively — would clobber "
+                      "the static plain[]/cs_in[] buffers. Ignoring "
+                      "the inner call.");
+        return;
+    }
+    s_in_parse = true;
     g_diag_try_parse_called++;
-    ESP_LOGI(TAG, "try_parse len=%u first=%02x last=%02x",
+    ESP_LOGD(TAG, "try_parse len=%u first=%02x last=%02x",
              (unsigned)s_len, s_len > 0 ? s_buf[0] : 0,
              s_len > 0 ? s_buf[s_len-1] : 0);
-    if (s_len < 4) { ESP_LOGW(TAG, "too short"); return; }
+    if (s_len < 4) {
+        ESP_LOGW(TAG, "too short");
+        goto out;
+    }
     const uint8_t *p = s_buf;
     if (p[0] != FRAME_START || p[s_len - 1] != FRAME_END) {
         ESP_LOGW(TAG, "S/E mismatch first=%02x last=%02x", p[0], p[s_len-1]);
-        return;
+        goto out;
     }
 
     int cmd_len = 0;
@@ -85,7 +105,7 @@ static void try_parse(void) {
         g_diag_unknown_cmd++;
         ESP_LOGW(TAG, "unknown cmd prefix: %02x %02x",
                  s_len >= 3 ? p[1] : 0, s_len >= 4 ? p[2] : 0);
-        return;
+        goto out;
     }
 
     char cmd[3] = {0};
@@ -97,14 +117,13 @@ static void try_parse(void) {
     if (data_end <= data_start) {
         // No payload / no checksum — malformed
         ESP_LOGW(TAG, "frame too short for cmd=%s", cmd);
-        return;
+        goto out;
     }
     size_t data_len = data_end - data_start;
 
     static uint8_t plain[MAX_FRAME_BYTES];  // static: avoid NimBLE task stack overflow
     if (encrypted) {
-        nivona_rc4(NIVONA_RC4_KEY, NIVONA_RC4_KEY_LEN,
-                   p + data_start, plain, data_len);
+        nivona_rc4_with_master_key(p + data_start, plain, data_len);
     } else {
         memcpy(plain, p + data_start, data_len);
     }
@@ -133,7 +152,7 @@ static void try_parse(void) {
                  payload_len > 4 ? plain[4] : 0,
                  payload_len > 5 ? plain[5] : 0,
                  payload_len > 6 ? plain[6] : 0);
-        return;
+        goto out;
     }
 
     // If encrypted and handshake done, strip the 2-byte key_prefix at
@@ -150,8 +169,11 @@ static void try_parse(void) {
 
     extern uint32_t g_diag_frame_parsed;
     g_diag_frame_parsed++;
-    ESP_LOGI(TAG, "rx cmd=%s payload_len=%u", cmd, (unsigned)actual_len);
+    ESP_LOGD(TAG, "rx cmd=%s payload_len=%u", cmd, (unsigned)actual_len);
     nivona_dispatch(cmd, actual_payload, actual_len);
+
+out:
+    s_in_parse = false;
 }
 
 void nivona_frame_reset(void) {
@@ -235,7 +257,31 @@ void nivona_frame_send(const char *cmd,
                        bool encrypt) {
     static uint8_t frame[MAX_FRAME_BYTES];  // static: NimBLE task stack is tight
     size_t pos = 0;
-    size_t cmd_len = strlen(cmd);
+    size_t cmd_len = cmd ? strlen(cmd) : 0;
+
+    // Bounds check BEFORE any write into the static frame[] — overflow
+    // here corrupts the buffer for every subsequent caller because the
+    // buffer is static. Compute the total bytes we'll write:
+    //   FRAME_START (1) + cmd (cmd_len) +
+    //   optional key prefix (KEY_PREFIX_LEN) +
+    //   payload (payload_len) +
+    //   checksum (1) + FRAME_END (1).
+    // The 2-byte cmd_len assumption (max "HX" / "HA" / "HU" etc.) is
+    // also enforced — a typo'd 3-byte opcode would silently slide past
+    // checks downstream.
+    size_t kp_len = (include_key_prefix && s_handshake_done) ? KEY_PREFIX_LEN : 0;
+    size_t required = 1 + cmd_len + kp_len + payload_len + 1 + 1;
+    if (cmd_len < 1 || cmd_len > 2) {
+        ESP_LOGE(TAG, "frame_send: cmd length %u outside [1,2] (cmd=%.4s)",
+                 (unsigned)cmd_len, cmd ? cmd : "(null)");
+        return;
+    }
+    if (required > sizeof(frame)) {
+        ESP_LOGE(TAG, "frame_send: required %u > frame %u (cmd=%s payload_len=%u)",
+                 (unsigned)required, (unsigned)sizeof(frame),
+                 cmd, (unsigned)payload_len);
+        return;
+    }
 
     frame[pos++] = FRAME_START;
     memcpy(frame + pos, cmd, cmd_len);
@@ -257,8 +303,8 @@ void nivona_frame_send(const char *cmd,
     frame[pos++] = cs;
 
     if (encrypt) {
-        nivona_rc4(NIVONA_RC4_KEY, NIVONA_RC4_KEY_LEN,
-                   frame + enc_start, frame + enc_start, pos - enc_start);
+        nivona_rc4_with_master_key(frame + enc_start, frame + enc_start,
+                                    pos - enc_start);
     }
 
     frame[pos++] = FRAME_END;

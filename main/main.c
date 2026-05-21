@@ -56,7 +56,7 @@ static void on_sync(void) {
         ESP_LOGE(TAG, "set_rnd rc=%d", rc);
         return;
     }
-    g_own_addr_type = BLE_OWN_ADDR_RANDOM;
+    nivona_ble_own_addr_set(BLE_OWN_ADDR_RANDOM);
 
     ESP_LOGI(TAG, "BLE addr (random static): %02x:%02x:%02x:%02x:%02x:%02x",
              rnd_addr[5], rnd_addr[4], rnd_addr[3],

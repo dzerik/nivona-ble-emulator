@@ -28,6 +28,17 @@ static const ble_uuid128_t CHAR_AD04_UUID    = NIVONA_UUID_128(0x04, 0xad);
 static const ble_uuid128_t CHAR_AD05_UUID    = NIVONA_UUID_128(0x05, 0xad);
 static const ble_uuid128_t CHAR_AD06_UUID    = NIVONA_UUID_128(0x06, 0xad);
 
+// nivona_gatt_on_{connect,disconnect,subscribe} are invoked on the
+// NimBLE host task. nivona_gatt_notify is called from app-side tasks
+// (FSM, CLI, brew/cycle workers). Without synchronization the host
+// task can flip s_conn_handle to NONE between the guard check and
+// ble_gatts_notify_custom in the app task, causing NimBLE to log
+// errors and on some versions leak the mbuf. A portMUX_TYPE spinlock
+// is enough — the critical sections are O(1), no allocation, no
+// blocking. Safe to take from any task context including ISR (notify
+// path will never be reached from ISR but the spinlock contract
+// stays clean).
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_notify_handle = 0;
 static bool     s_notify_subscribed = false;
@@ -112,7 +123,13 @@ static const struct ble_gatt_chr_def CHARS[] = {
     {
         .uuid = &CHAR_AD02_UUID.u,
         .access_cb = on_ad0x_stub,
-        .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_READ,
+        // AD02 is notify-only. Previously had BLE_GATT_CHR_F_READ as
+        // well, but the access_cb was a stub returning empty — when
+        // the Nivona Android app does a precautionary read of AD02
+        // during Initialize() it got an empty payload and could
+        // misbehave. The real machine doesn't allow reads on AD02
+        // either. (Audit-V3 finding I-Block2.)
+        .flags = BLE_GATT_CHR_F_NOTIFY,
         .val_handle = &s_notify_handle,
     },
     {
@@ -170,14 +187,18 @@ int nivona_gatt_init(void) {
 
 void nivona_gatt_on_connect(uint16_t conn_handle) {
     g_diag_connects++;
+    portENTER_CRITICAL(&s_state_mux);
     s_conn_handle = conn_handle;
     s_notify_subscribed = false;
+    portEXIT_CRITICAL(&s_state_mux);
 }
 
 void nivona_gatt_on_disconnect(void) {
     g_diag_disconnects++;
+    portENTER_CRITICAL(&s_state_mux);
     s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
     s_notify_subscribed = false;
+    portEXIT_CRITICAL(&s_state_mux);
     nivona_frame_reset();
 }
 
@@ -185,18 +206,37 @@ void nivona_gatt_on_subscribe(uint16_t attr_handle, int cur_notify) {
     g_diag_subscribes++;
     ESP_LOGI(TAG, "SUBSCRIBE attr_handle=%u (notify_h=%u) cur_notify=%d",
              attr_handle, s_notify_handle, cur_notify);
+    if (s_notify_handle == 0) {
+        // Defensive: a zero handle means service registration didn't
+        // populate val_handle yet. We must not subscribe via a match
+        // against the uninitialised slot — see audit-V3 finding I3.
+        ESP_LOGE(TAG, "subscribe before handle was registered — ignoring");
+        return;
+    }
     if (attr_handle == s_notify_handle) {
+        portENTER_CRITICAL(&s_state_mux);
         s_notify_subscribed = cur_notify != 0;
-        ESP_LOGI(TAG, "AD02 notify subscribed=%d", s_notify_subscribed);
+        portEXIT_CRITICAL(&s_state_mux);
+        ESP_LOGI(TAG, "AD02 notify subscribed=%d", cur_notify != 0);
     }
 }
 
 void nivona_gatt_notify(const uint8_t *data, size_t len) {
-    if (!s_notify_subscribed || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return;
-    ESP_LOGI(TAG, "AD02 -> tx %u bytes", (unsigned)len);
+    // Take a consistent snapshot of conn_handle + subscribed under the
+    // spinlock so a disconnect from the host task cannot tear the pair.
+    portENTER_CRITICAL(&s_state_mux);
+    bool subscribed = s_notify_subscribed;
+    uint16_t conn = s_conn_handle;
+    uint16_t notify_h = s_notify_handle;
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (!subscribed || conn == BLE_HS_CONN_HANDLE_NONE || notify_h == 0) {
+        return;
+    }
+    ESP_LOGD(TAG, "AD02 -> tx %u bytes", (unsigned)len);
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (!om) return;
-    int rc = ble_gatts_notify_custom(s_conn_handle, s_notify_handle, om);
+    int rc = ble_gatts_notify_custom(conn, notify_h, om);
     if (rc != 0) { g_diag_notifies_failed++; ESP_LOGW(TAG, "notify rc=%d", rc); }
     else { g_diag_notifies_sent++; }
 }
