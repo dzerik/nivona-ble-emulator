@@ -155,4 +155,25 @@ main/
 
 ## License
 
-Same as the parent `melitta-ha-integration` project.
+MIT — see [`LICENSE`](LICENSE). Matches the parent
+`melitta-barista-ha` integration.
+
+## Legal & trademarks
+
+This is a research and interoperability tool. It is **not**
+affiliated with, endorsed by, or sponsored by Nivona Apparate GmbH
+or Eugster / Frismag AG. "Nivona", "NICR" and "NIVO" are
+trademarks of their respective owners, used here descriptively
+only — see [`LEGAL.md`](LEGAL.md) for the full position statement,
+the EU/US/RU legal basis, and the cooperation channels for any
+legitimate concern.
+
+## Security
+
+Vulnerability reports go through GitHub Security Advisories, not
+public issues — see [`SECURITY.md`](SECURITY.md).
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the build quickstart,
+branching/commit conventions, and PR checklist.
