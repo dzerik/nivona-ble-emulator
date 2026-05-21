@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/dzerik/nivona-ble-emulator/security/advisories/new
+    about: |
+      Do NOT file a public issue for security bugs. Use private
+      vulnerability reporting instead — see SECURITY.md.
+  - name: Question / discussion
+    url: https://github.com/dzerik/nivona-ble-emulator/discussions
+    about: For questions, use Discussions rather than issues.

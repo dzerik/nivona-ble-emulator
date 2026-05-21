@@ -1,0 +1,76 @@
+name: Bug report
+description: A reproducible problem with the emulator firmware or its tooling.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug report. **Security-sensitive issues**
+        go through the private advisory link in the "New Issue" picker
+        — please don't disclose them here.
+
+  - type: input
+    id: version
+    attributes:
+      label: Emulator version
+      description: |
+        Either the `emu-vX.Y.Z` tag or the contents of `VERSION` on
+        the build you tested.
+      placeholder: "emu-v0.9.0"
+    validations:
+      required: true
+
+  - type: input
+    id: family
+    attributes:
+      label: Family being emulated
+      description: |
+        Output of CLI `family` (e.g. `8000`, `1040`, `600`).
+      placeholder: "8000"
+    validations:
+      required: true
+
+  - type: input
+    id: chip
+    attributes:
+      label: ESP32 variant / IDF version
+      description: |
+        Output of `idf.py --version` and your `CONFIG_IDF_TARGET`
+        from `sdkconfig.defaults`.
+      placeholder: "ESP-IDF v5.3.1, esp32c6"
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Be specific. If the bug surfaces over BLE, include the CLI
+        commands and the matching app actions in the order you ran
+        them.
+      placeholder: |
+        1. Flash emu-v0.9.0 to ESP32-C6
+        2. Connect with the Nivona app
+        3. Set strength=3, coffee_amount=80ml in the UI
+        4. Tap "Brew" on Espresso
+        Expected: …
+        Got: …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Serial / telnet log
+      description: |
+        Paste any relevant ESP_LOGI/W/E output. If long, attach a
+        file. Redact your real Wi-Fi credentials.
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        HX traces, diff vs known-good behaviour, screenshots of the
+        app side, etc.

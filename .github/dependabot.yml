@@ -1,0 +1,27 @@
+version: 2
+
+# Dependabot is scoped narrowly here: the only "package ecosystem"
+# we actually consume in CI is GitHub Actions (actions/checkout +
+# espressif/esp-idf-ci-action). The ESP-IDF tree itself is pulled
+# from Espressif's official Docker image inside the action, so its
+# version is governed by the `esp_idf_version:` input in
+# `.github/workflows/build.yml` — not by Dependabot.
+#
+# Monthly cadence: low-traffic project, low-noise schedule. We'd
+# rather see one PR a month than three on a busy Tuesday.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      day: monday
+      time: "09:00"
+      timezone: Europe/Belgrade
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope

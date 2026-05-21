@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a new emulator capability or behavior.
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check `docs/FUNCTIONAL_COVERAGE.md` —
+        many "missing features" are catalogued there as known gaps
+        (G1–G6) with explicit severity and rationale.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        What problem does this solve? If it improves fidelity to the
+        real machine, what observable difference will the Nivona
+        Android app see?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: |
+        Be concrete. Wire-format changes, new HR/HW ids, new CLI
+        commands — sketch the interface first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Why is this the right approach? What other approaches were
+        rejected and why?
+
+  - type: input
+    id: source
+    attributes:
+      label: Source / reference
+      description: |
+        APK packet trace, real-machine RE notes, link to upstream
+        Nivona/Eugster doc, or a `docs/*.md` paragraph that defines
+        the expected behaviour.
