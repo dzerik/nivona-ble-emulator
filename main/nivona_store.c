@@ -24,6 +24,11 @@ typedef struct { int16_t id; uint8_t data[NIVONA_ALPHA_MAX]; size_t len; bool us
 static num_entry_t   s_num[NUM_CAP];
 static alpha_entry_t s_alpha[ALPHA_CAP];
 
+// Forward declarations for the memory-only helpers used by nvs_load_all
+// (defined further below alongside their persisting public siblings).
+static void set_num_mem(int16_t id, int32_t value);
+static void set_alpha_mem(int16_t id, const uint8_t *data, size_t len);
+
 // ---- NVS helpers -------------------------------------------------------
 
 static void make_key(char *out, size_t out_sz, int16_t id) {
@@ -58,7 +63,7 @@ static void nvs_load_all(void) {
             uint8_t buf[NIVONA_ALPHA_MAX];
             size_t sz = sizeof(buf);
             if (nvs_get_blob(h, info.key, buf, &sz) == ESP_OK) {
-                nivona_store_set_alpha(id, buf, sz);
+                set_alpha_mem(id, buf, sz);  // load-path: NO re-persist
             }
             err = nvs_entry_next(&it);
         }
@@ -194,6 +199,42 @@ void nivona_store_set_num(int16_t id, int32_t value) {
     }
 }
 
+// Batched API — one open / N set_i32 / one commit / one close. For
+// hot paths that mutate many counters at once (e.g. brew completion,
+// which writes 6-9 wear/counter values). Each set call still publishes
+// to memory, so concurrent readers see the new values without waiting
+// for commit. The mismatched-id case (handle open failure) falls back
+// to memory-only mutation, which matches the failure mode of
+// nivona_store_set_num itself.
+struct nivona_store_batch {
+    nvs_handle_t h;
+    bool         open;
+};
+
+nivona_store_batch_t *nivona_store_batch_begin(void) {
+    static nivona_store_batch_t s_batch;  // one batch at a time — caller
+                                          // owns the contract; brew_task
+                                          // and cycle_task never overlap.
+    s_batch.open = (nvs_open(NS_NUM, NVS_READWRITE, &s_batch.h) == ESP_OK);
+    return &s_batch;
+}
+
+void nivona_store_batch_set_num(nivona_store_batch_t *b,
+                                 int16_t id, int32_t value) {
+    set_num_mem(id, value);
+    if (b != NULL && b->open) {
+        char key[8]; make_key(key, sizeof(key), id);
+        nvs_set_i32(b->h, key, value);
+    }
+}
+
+void nivona_store_batch_end(nivona_store_batch_t *b) {
+    if (b == NULL || !b->open) return;
+    nvs_commit(b->h);
+    nvs_close(b->h);
+    b->open = false;
+}
+
 // ---- Alpha ------------------------------------------------------------
 
 size_t nivona_store_get_alpha(int16_t id, uint8_t *out, size_t max) {
@@ -207,14 +248,19 @@ size_t nivona_store_get_alpha(int16_t id, uint8_t *out, size_t max) {
     return 0;
 }
 
-void nivona_store_set_alpha(int16_t id, const uint8_t *data, size_t len) {
+// Memory-only update — does NOT write to NVS. Used by nvs_load_all
+// (parallel to set_num_mem) so we don't re-persist every alpha value
+// we just read at boot, and to avoid opening NVS_ALPHA NVS_READWRITE
+// while nvs_load_all still holds a NVS_READONLY handle to the same
+// namespace (undefined per ESP-IDF NVS docs).
+static void set_alpha_mem(int16_t id, const uint8_t *data, size_t len) {
     if (len > NIVONA_ALPHA_MAX) len = NIVONA_ALPHA_MAX;
     int free_slot = -1;
     for (int i = 0; i < ALPHA_CAP; i++) {
         if (s_alpha[i].used && s_alpha[i].id == id) {
             memcpy(s_alpha[i].data, data, len);
             s_alpha[i].len = len;
-            goto persist;
+            return;
         }
         if (!s_alpha[i].used && free_slot < 0) free_slot = i;
     }
@@ -226,15 +272,17 @@ void nivona_store_set_alpha(int16_t id, const uint8_t *data, size_t len) {
     memcpy(s_alpha[free_slot].data, data, len);
     s_alpha[free_slot].len = len;
     s_alpha[free_slot].used = true;
-persist:
-    {
-        nvs_handle_t h;
-        if (nvs_open(NS_ALPHA, NVS_READWRITE, &h) == ESP_OK) {
-            char key[8]; make_key(key, sizeof(key), id);
-            nvs_set_blob(h, key, data, len);
-            nvs_commit(h);
-            nvs_close(h);
-        }
+}
+
+void nivona_store_set_alpha(int16_t id, const uint8_t *data, size_t len) {
+    if (len > NIVONA_ALPHA_MAX) len = NIVONA_ALPHA_MAX;
+    set_alpha_mem(id, data, len);
+    nvs_handle_t h;
+    if (nvs_open(NS_ALPHA, NVS_READWRITE, &h) == ESP_OK) {
+        char key[8]; make_key(key, sizeof(key), id);
+        nvs_set_blob(h, key, data, len);
+        nvs_commit(h);
+        nvs_close(h);
     }
 }
 

@@ -105,9 +105,17 @@ static void apply_wear_after_brew(const brew_arg_t *arg,
                                   const nivona_family_t *fam) {
     const nivona_stats_t *stats = nivona_stats_current();
 
+    // One NVS open + one commit at the end covers up to 9 set_num
+    // calls below. Previously each set_num cycled open/set/commit/close
+    // → 9 flash erase+write cycles per brew. The batched variant
+    // updates memory immediately (so HX readers see new values right
+    // away) and defers the NVS commit.
+    nivona_store_batch_t *b = nivona_store_batch_begin();
+
     if (nivona_stats_has_recipe_counter(stats, arg->selector)) {
         int16_t sel_id = (int16_t)(200 + arg->selector);
-        nivona_store_set_num(sel_id, nivona_store_get_num(sel_id) + 1);
+        nivona_store_batch_set_num(b, sel_id,
+            nivona_store_get_num(sel_id) + 1);
         ESP_LOGI(TAG, "cup counter: selector %u → HR %d = %d",
                  arg->selector, (int)sel_id,
                  (int)nivona_store_get_num(sel_id));
@@ -117,7 +125,7 @@ static void apply_wear_after_brew(const brew_arg_t *arg,
                  arg->selector, fam ? fam->key : "?");
     }
     if (stats->total_id != 0) {
-        nivona_store_set_num(stats->total_id,
+        nivona_store_batch_set_num(b, stats->total_id,
             nivona_store_get_num(stats->total_id) + 1);
         ESP_LOGI(TAG, "total counter: HR %d = %d",
                  (int)stats->total_id,
@@ -125,11 +133,12 @@ static void apply_wear_after_brew(const brew_arg_t *arg,
     }
     // Family-specific "via app" bump — absent on 700/79X/600.
     if (stats->via_app_id != 0) {
-        nivona_store_set_num(stats->via_app_id,
+        nivona_store_batch_set_num(b, stats->via_app_id,
             nivona_store_get_num(stats->via_app_id) + 1);
     }
 
-    // Wear-ticks source (see header comment).
+    // Wear-ticks source (see header comment). Read AFTER the total_id
+    // bump above so parity calcs see the post-brew count.
     static int32_t s_local_wear_tick = 0;
     int32_t wear_ticks;
     if (stats->total_id != 0) {
@@ -141,21 +150,23 @@ static void apply_wear_after_brew(const brew_arg_t *arg,
 
     // Filter: −1 % per brew, warn flag once below 10 %.
     int32_t filter_pct = nivona_store_get_num(640);
-    if (filter_pct > 0) nivona_store_set_num(640, filter_pct - 1);
-    if (nivona_store_get_num(640) < 10) nivona_store_set_num(641, 1);
+    if (filter_pct > 0) nivona_store_batch_set_num(b, 640, filter_pct - 1);
+    if (nivona_store_get_num(640) < 10) nivona_store_batch_set_num(b, 641, 1);
 
     // Brew-unit clean: −1 % per 2 brews, warn flag below 20 %.
     if ((wear_ticks & 1) == 0) {
         int32_t bu = nivona_store_get_num(610);
-        if (bu > 0) nivona_store_set_num(610, bu - 1);
-        if (nivona_store_get_num(610) < 20) nivona_store_set_num(611, 1);
+        if (bu > 0) nivona_store_batch_set_num(b, 610, bu - 1);
+        if (nivona_store_get_num(610) < 20) nivona_store_batch_set_num(b, 611, 1);
     }
     // Descale: −1 % per 5 brews, warn flag below 20 %.
     if ((wear_ticks % 5) == 0) {
         int32_t ds = nivona_store_get_num(600);
-        if (ds > 0) nivona_store_set_num(600, ds - 1);
-        if (nivona_store_get_num(600) < 20) nivona_store_set_num(601, 1);
+        if (ds > 0) nivona_store_batch_set_num(b, 600, ds - 1);
+        if (nivona_store_get_num(600) < 20) nivona_store_batch_set_num(b, 601, 1);
     }
+
+    nivona_store_batch_end(b);
 }
 
 static void brew_task(void *arg) {

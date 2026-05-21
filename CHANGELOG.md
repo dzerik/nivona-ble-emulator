@@ -6,6 +6,56 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.8.1] — 2026-05-21 — V3 follow-up patch
+
+Independent code review post-0.8.0 (no audit context) flagged four
+real high-confidence findings the V3 sweep missed — including one
+regression introduced by 0.8.0 itself. Patched as Phase 6.
+
+### Fixed
+
+- **Wi-Fi reconnect no longer stalls the event loop** (regression
+  from 0.8.0). The disconnect handler was calling `vTaskDelay` for
+  up to 30 s on the system event-loop task, which dispatches *every*
+  Wi-Fi/IP event including `IP_EVENT_STA_GOT_IP`. So a failed retry
+  would mask the success of a subsequent successful retry until the
+  delay elapsed. Replaced with a one-shot `esp_timer` so the
+  back-off fires on the esp_timer task and the event loop stays
+  responsive.
+- **`nivona_frame_send` no longer races on a shared buffer.** The
+  `static uint8_t frame[MAX_FRAME_BYTES]` was concurrently written
+  by the NimBLE host task (ACK/NACK/dispatch), `brew_task` and
+  `cycle_task` (push_status every 500 ms), and the CLI task. With
+  overlap the buffer was torn → corrupt frames on the wire. Moved
+  to a stack-allocated buffer; 512 B fits in every caller's ≥ 4 kB
+  stack with margin.
+- **Alpha load path no longer re-persists at boot.** Mirror of the
+  num-store fix from 0.8.0 that was missed for the alpha store.
+  `nvs_load_all` called the public `nivona_store_set_alpha` for
+  every blob it read, opening `NVS_READWRITE` on the same namespace
+  where it already held an `NVS_READONLY` iterator (UB per ESP-IDF
+  NVS docs) and recommitting every value to flash. Added
+  `set_alpha_mem` parallel to `set_num_mem`.
+- **Batched NVS commits in `apply_wear_after_brew`.** Per-brew flash
+  wear was 9× the necessary minimum because each `set_num` cycled
+  its own open/set/commit/close. Added a small
+  `nivona_store_batch_*` API that opens NVS once and commits once
+  at the end. Memory state is still updated immediately so HX
+  readers see the new values without waiting for commit.
+
+### Known issues still pending
+
+- `/diag` HTTP endpoint exposes `last_decrypt` (first 32 plaintext
+  bytes of the most recent incoming frame, which once the handshake
+  completes includes the 2-byte session key prefix). Acceptable for
+  a dev-only emulator on a trusted LAN; will gate behind a compile
+  flag in a future release.
+- `nivona_telnet.c`: narrow TOCTOU window between `s_client_fd`
+  snapshot and the `send()`. Worst case: one log line addressed to
+  a freshly-recycled fd. Low impact.
+
+No wire-format / NVS layout change vs 0.8.0.
+
 ## [0.8.0] — 2026-05-21 — Audit V3 sweep (concurrency, safety, clarity)
 
 First post-split release. The emulator was extracted from
