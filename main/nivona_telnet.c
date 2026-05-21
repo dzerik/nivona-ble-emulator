@@ -29,22 +29,30 @@ static int telnet_vprintf(const char *fmt, va_list args) {
     va_list copy;
     va_copy(copy, args);
     int r = s_orig_vprintf ? s_orig_vprintf(fmt, args) : vprintf(fmt, args);
+
+    // Format outside the mutex — vsnprintf can be slow on long lines
+    // and we want to keep the critical section as small as possible.
+    char buf[256];
+    int n = vsnprintf(buf, sizeof(buf), fmt, copy);
+    va_end(copy);
+    if (n <= 0) return r;
+    // vsnprintf returns the count it WOULD have written, not what
+    // fit. Clamp so we never send the trailing NUL down the stream
+    // (clients can choke on embedded NULs in the log).
+    if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
+
+    // send() must happen WITH the mutex held. Otherwise a concurrent
+    // listen_task could shutdown+close the old fd we snapshotted, lwIP
+    // recycles the fd number, and our send() targets whatever new
+    // socket got that number. Holding the mutex serialises send()
+    // against the close() in client_task cleanup. send() uses
+    // MSG_DONTWAIT so the critical section is bounded.
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     int fd = s_client_fd;
-    xSemaphoreGive(s_mutex);
     if (fd >= 0) {
-        char buf[256];
-        int n = vsnprintf(buf, sizeof(buf), fmt, copy);
-        if (n > 0) {
-            // vsnprintf returns the count it WOULD have written, not
-            // what fit. Clamp to sizeof(buf)-1 so we never send the
-            // trailing NUL terminator down the telnet stream (clients
-            // can choke on embedded NULs in the log).
-            if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
-            (void)send(fd, buf, n, MSG_DONTWAIT);
-        }
+        (void)send(fd, buf, n, MSG_DONTWAIT);
     }
-    va_end(copy);
+    xSemaphoreGive(s_mutex);
     return r;
 }
 
@@ -129,10 +137,17 @@ static void client_task(void *arg) {
         }
     }
 
+    // close() inside the mutex too: between clearing s_client_fd and
+    // the close(), lwIP could otherwise hand `fd` to a new socket
+    // opened elsewhere, and a concurrent telnet_vprintf snapshot from
+    // an earlier moment could end up sending data to that wrong fd.
+    // Pairing the close() with the slot clear under one lock means
+    // any vprintf that observes s_client_fd == fd is guaranteed the
+    // fd is still ours until the lock is released.
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     if (s_client_fd == fd) s_client_fd = -1;
-    xSemaphoreGive(s_mutex);
     close(fd);
+    xSemaphoreGive(s_mutex);
     vTaskDelete(NULL);
 }
 
