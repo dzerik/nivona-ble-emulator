@@ -1,0 +1,49 @@
+name: build
+
+# Opt into Node.js 24 for JS-based actions (actions/checkout, the
+# esp-idf action's wrappers). The runner warns about Node 20
+# deprecation; this avoids the warning until Sep 2026 when Node 20
+# is removed entirely. Safe to flip back if anything breaks — Node 24
+# is fully supported by every action we use today.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  push:
+    branches: [main]
+    # Tag pushes (emu-vX.Y.Z) also trigger via the `main` push;
+    # no need to list the tag pattern separately.
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel a stale build on the same ref when a new push comes in —
+# avoids two simultaneous build minutes burning on a fast-forward
+# series of pushes.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  esp-idf-build:
+    name: ESP-IDF v5.3 / esp32c6
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Provide a dummy wifi_secrets.h
+        # The real wifi_secrets.h is .gitignored so credentials never
+        # leave the developer's box. Templated values are fine for a
+        # build-only check — nothing on the firmware needs a working
+        # AP to *compile*.
+        run: cp main/wifi_secrets.h.template main/wifi_secrets.h
+
+      - name: Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3
+          target: esp32c6
+          # Stay on the default `idf.py build`. Don't pass `--clean`
+          # — the action runs in an ephemeral container so the build
+          # is always from scratch anyway.
