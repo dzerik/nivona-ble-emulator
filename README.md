@@ -1,5 +1,7 @@
 # Nivona BLE Emulator
 
+[![build](https://github.com/dzerik/nivona-ble-emulator/actions/workflows/build.yml/badge.svg)](https://github.com/dzerik/nivona-ble-emulator/actions/workflows/build.yml)
+
 **Version:** see [`VERSION`](VERSION) · **Changelog:**
 [`CHANGELOG.md`](CHANGELOG.md) · **Tags:** `emu-v<X.Y.Z>`
 
