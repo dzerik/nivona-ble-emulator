@@ -1,5 +1,13 @@
 name: build
 
+# Opt into Node.js 24 for JS-based actions (actions/checkout, the
+# esp-idf action's wrappers). The runner warns about Node 20
+# deprecation; this avoids the warning until Sep 2026 when Node 20
+# is removed entirely. Safe to flip back if anything breaks — Node 24
+# is fully supported by every action we use today.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   push:
     branches: [main]
