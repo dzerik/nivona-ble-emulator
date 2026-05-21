@@ -106,16 +106,35 @@ static const nivona_recipe_t RECIPES_8000[] = {
 
 #define COUNT(arr) (sizeof(arr) / sizeof((arr)[0]))
 
+// Per-family temp-recipe (HW 9001 + offset) layouts. Mirrors
+// `brands/nivona.py:_STANDARD_RECIPE_LAYOUTS`. Only the fields used
+// by the emulator's ramp-scaling heuristic are tracked (strength,
+// two_cups, four fluid volumes). Temperatures exist on real hardware
+// but the emulator has no thermal model.
+//
+// Field-naming guide:
+//   600  / 700 / 79x / 8000 — single temperature field at offset 3
+//                             (we don't read it)
+//   900  / 900-light       — separate temps at 5..8, fluids at 9..12
+//   1030 / 1040            — same as 900 (fluids at 9..12)
+// Milk fields are absent on 600 (no milk system in this family).
+static const nivona_recipe_layout_t LAYOUT_600  = { 1, 4, 5, 6, -1,  8 };
+static const nivona_recipe_layout_t LAYOUT_700  = { 1, 4, 5, 6,  7,  8 };
+static const nivona_recipe_layout_t LAYOUT_79X  = { 1, 4, 5, 6,  7,  8 };
+static const nivona_recipe_layout_t LAYOUT_900  = { 1, 4, 9, 10, 11, 12 };
+static const nivona_recipe_layout_t LAYOUT_1000 = { 1, 4, 9, 10, 11, 12 };
+static const nivona_recipe_layout_t LAYOUT_8000 = { 1, 4, 5, 6,  7,  8 };
+
 const nivona_family_t NIVONA_FAMILIES[] = {
-    // key         ble_name              model         ready  brew   scale  milk  lid   mode   recipes           n
-    { "600",       "6801000001-----",   "NICR 680",   8,     11,    1,     0,    0,    0x0B,  RECIPES_600,      COUNT(RECIPES_600)  },
-    { "700",       "7591000001-----",   "NICR 759",   8,     11,    1,     0,    0,    0x0B,  RECIPES_700,      COUNT(RECIPES_700)  },
-    { "79x",       "7951000001-----",   "NICR 795",   8,     11,    1,     0,    0,    0x0B,  RECIPES_79X,      COUNT(RECIPES_79X)  },
-    { "900",       "9301000001-----",   "NICR 930",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900)  },
-    { "900-light", "9701000001-----",   "NICR 970",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900)  },
-    { "1030",      "0301000001-----",   "NICR 1030",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1030,     COUNT(RECIPES_1030) },
-    { "1040",      "0401000001-----",   "NICR 1040",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1040,     COUNT(RECIPES_1040) },
-    { "8000",      "8107000001-----",   "NIVO 8107",  3,     4,     1,     1,    1,    0x04,  RECIPES_8000,     COUNT(RECIPES_8000) },
+    // key         ble_name              model         ready  brew   scale  milk  lid   mode   recipes           n                          layout
+    { "600",       "6801000001-----",   "NICR 680",   8,     11,    1,     0,    0,    0x0B,  RECIPES_600,      COUNT(RECIPES_600),        LAYOUT_600  },
+    { "700",       "7591000001-----",   "NICR 759",   8,     11,    1,     0,    0,    0x0B,  RECIPES_700,      COUNT(RECIPES_700),        LAYOUT_700  },
+    { "79x",       "7951000001-----",   "NICR 795",   8,     11,    1,     0,    0,    0x0B,  RECIPES_79X,      COUNT(RECIPES_79X),        LAYOUT_79X  },
+    { "900",       "9301000001-----",   "NICR 930",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900),        LAYOUT_900  },
+    { "900-light", "9701000001-----",   "NICR 970",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900),        LAYOUT_900  },
+    { "1030",      "0301000001-----",   "NICR 1030",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1030,     COUNT(RECIPES_1030),       LAYOUT_1000 },
+    { "1040",      "0401000001-----",   "NICR 1040",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1040,     COUNT(RECIPES_1040),       LAYOUT_1000 },
+    { "8000",      "8107000001-----",   "NIVO 8107",  3,     4,     1,     1,    1,    0x04,  RECIPES_8000,     COUNT(RECIPES_8000),       LAYOUT_8000 },
 };
 
 const size_t NIVONA_FAMILIES_COUNT =

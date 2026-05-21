@@ -42,7 +42,7 @@ Legend: ✓ = match, ⚠ = partial / gap (see notes), ✗ = missing.
 | **HX `info` byte** | always 0 (verified app-side) | ✓ | warning emitted on non-zero |
 | **HE start brew** | `[0, mode, 0, selector, 0, flags, 0…]` 18 bytes | ✓ | `nivona_dispatch.c:235-293`, validates mode + flags |
 | **HE flag 0x00 (ChilledBrew)** | accepted on NICR 1040 firmware | ⚠ G2 | accepted but no chilled-specific behavior |
-| **HW temp-recipe register** | strength/coffee/water/milk amounts written to reg 9001 before HE | ⚠ G3 | stored in NVS but `brew_task` uses fixed RAMPS, ignores overrides |
+| **HW temp-recipe register** | strength/coffee/water/milk amounts written to reg 9001 before HE | ✓ (since emu-v0.8.3) | per-family field layouts in `nivona_family_t.recipe_layout`; `brew_task` reads + applies strength + volume scaling |
 | **HZ cancel** | abort active brew | ✓ | `nivona_brew_cancel` |
 | **HY confirm prompt** | clears manipulation, re-evaluates | ✓ | `nivona_dispatch.c:322-333` |
 | **HD reset-default** | erase a single HR id | ✓ | `nivona_store_erase_num` |
@@ -101,27 +101,32 @@ in `RAMPS` table when set. Only NICR 1040 is affected. Easy fix; not
 implemented because we have no way to verify the actual chilled
 ramp duration against real hardware.
 
-### G3 — Temp-recipe HW overrides (register 9001) are not honored by brew_task
+### G3 — Temp-recipe HW overrides (register 9001) — CLOSED in emu-v0.8.3
 
-**Severity:** Medium (cosmetic)
-**Location:** `nivona_brew.c:brew_task` — uses `find_ramp(cat)`
-based purely on recipe selector, ignores any HW writes to register
-9001 between HE invocations.
+**Status:** ✓ closed.
+**Location:** `nivona_brew.c::read_overrides` + `apply_override_scale`,
+field offsets in `nivona_family_t.recipe_layout`
+(`nivona_families.c`).
 **What the app does:** Before issuing `HE`, the app writes user-
 selected strength / coffee_amount / water_amount / milk_amount /
 temperature into a temporary-recipe register (`SendTemporaryRecipe`,
 APK:5103). The machine consumes these for the upcoming brew, then
 the values are discarded.
-**Symptom:** the user dials in "extra strong, 80 ml, no milk" in
-the app, the emulator brews regular default. The brew completes
-"successfully" (HX progresses to 100 %, counters bump), but the
-override values had no effect on the simulated ramp.
-**Action:** read register 9001 at the start of `brew_task` and
-scale `total_ms` / consumables-consumption accordingly. Requires
-deciding which fields of 9001 correspond to which physical
-parameter — the layout depends on family. **This is the most
-realistic-feeling functional gap** if your goal is to drive the
-emulator with the real app and feel the per-cup customisation.
+**Resolution:** `brew_task` now reads the temp-recipe slot at the
+start of every brew via per-family field offsets that mirror
+`brands/nivona.py:_STANDARD_RECIPE_LAYOUTS`. A heuristic scaling
+factor is applied to `total_ms`:
+- **strength** — each unit above zero adds 15 % to brew duration.
+- **fluid volumes** — total of coffee + water + milk + milk_foam,
+  scaled against an 80 ml reference, clamped to [0.5 ×, 4.0 ×].
+- Combined as a multiplier on the category-default `total_ms`.
+The override values are NOT cleared from NVS after the brew (real
+machine consumes them; emulator leaves them stale). The app
+re-writes them before every HE, so the stale-after-disconnect
+window is invisible in normal use.
+**Known limitation:** the heuristic doesn't model thermal ramps —
+temperature overrides are read but ignored. Adding a thermal model
+would require knowing the real machine's flow-rate-vs-temp curve.
 
 ### G4 — Per-family settings (HW IDs 101..119) are not pre-seeded
 

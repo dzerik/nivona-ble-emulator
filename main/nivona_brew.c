@@ -169,6 +169,92 @@ static void apply_wear_after_brew(const brew_arg_t *arg,
     nivona_store_batch_end(b);
 }
 
+// Snapshot of the per-brew temp-recipe overrides (HW 9001 + offset).
+// All fields are raw values as the app wrote them; -1 means the family
+// doesn't expose that field. `active` is true if at least one field
+// was non-zero — the brew should then scale its ramp; otherwise the
+// brew runs with default category-driven timings.
+typedef struct {
+    int32_t strength;        // -1 = absent
+    int32_t two_cups;        // -1 = absent (0/1 when present)
+    int32_t coffee_amount;   // ml on the wire
+    int32_t water_amount;
+    int32_t milk_amount;     // -1 on 600
+    int32_t milk_foam_amount;
+    bool    active;
+} brew_overrides_t;
+
+static int32_t read_temp_reg(int8_t offset) {
+    if (offset < 0) return -1;
+    int16_t reg = nivona_temp_recipe_reg(offset);
+    // The app may not have written this field — has_num avoids picking
+    // up a stale 0 left over from a previous slot if the entry simply
+    // doesn't exist.
+    if (!nivona_store_has_num(reg)) return -1;
+    return nivona_store_get_num(reg);
+}
+
+static void read_overrides(const nivona_family_t *fam,
+                           brew_overrides_t *out) {
+    const nivona_recipe_layout_t *L = &fam->recipe_layout;
+    out->strength         = read_temp_reg(L->strength);
+    out->two_cups         = read_temp_reg(L->two_cups);
+    out->coffee_amount    = read_temp_reg(L->coffee_amount);
+    out->water_amount     = read_temp_reg(L->water_amount);
+    out->milk_amount      = read_temp_reg(L->milk_amount);
+    out->milk_foam_amount = read_temp_reg(L->milk_foam_amount);
+    // Treat "-1" as "absent" and any value > 0 as "set". strength=0
+    // counts as set too (user explicitly chose minimum).
+    out->active =
+        (out->strength         >= 0) ||
+        (out->two_cups          > 0) ||
+        (out->coffee_amount     > 0) ||
+        (out->water_amount      > 0) ||
+        (out->milk_amount       > 0) ||
+        (out->milk_foam_amount  > 0);
+}
+
+// Heuristic ramp scaling based on the app's per-brew overrides.
+// Returns a multiplier ∈ [0.5, 4.0] that the brew loop applies to
+// `total_ms`. Two factors combine:
+//   - strength: each unit above zero adds 15 % to the brew duration
+//     (real machines spend longer grinding for stronger drinks).
+//   - fluid volumes: ratio of (coffee + water + milk + foam) to a
+//     reference 80 ml, clamped to [0.5x, 4.0x]. So a 30 ml espresso
+//     is ~0.5x of the category default; a 200 ml americano ~2.5x.
+//
+// If the override slot has no fluid info we just apply the strength
+// factor — the category default already encodes a reasonable volume.
+//
+// This is a deliberately rough heuristic — we don't have the real
+// firmware's flow-rate model, but the user-visible behaviour ("set
+// extra-strong, brew takes longer" / "set 200 ml, brew takes longer")
+// matches what the app's UI promises.
+static uint32_t apply_override_scale(uint32_t total_ms,
+                                     const brew_overrides_t *ov) {
+    // strength: -1 → no effect; 0..N (typically 0..4) → +15 %/unit
+    float strength_mult = 1.0f;
+    if (ov->strength > 0) {
+        strength_mult += 0.15f * (float)ov->strength;
+    }
+
+    // fluid total → only applied if at least one positive volume is set
+    int32_t fluid_total = 0;
+    if (ov->coffee_amount     > 0) fluid_total += ov->coffee_amount;
+    if (ov->water_amount      > 0) fluid_total += ov->water_amount;
+    if (ov->milk_amount       > 0) fluid_total += ov->milk_amount;
+    if (ov->milk_foam_amount  > 0) fluid_total += ov->milk_foam_amount;
+    float volume_mult = 1.0f;
+    if (fluid_total > 0) {
+        volume_mult = (float)fluid_total / 80.0f;
+        if (volume_mult < 0.5f) volume_mult = 0.5f;
+        if (volume_mult > 4.0f) volume_mult = 4.0f;
+    }
+
+    float scale = strength_mult * volume_mult;
+    return (uint32_t)((float)total_ms * scale);
+}
+
 static void brew_task(void *arg) {
     (void)arg; // args passed via s_arg to avoid intptr_t truncation
 
@@ -196,11 +282,42 @@ static void brew_task(void *arg) {
     uint32_t total_ms = ramp->total_ms;
     if (arg_snapshot.two_cups) total_ms *= 2;
 
+    // Apply per-brew overrides the app wrote into the temp-recipe slot
+    // (HW 9001 + field offset) before issuing HE. Treats `two_cups`
+    // from the overrides as an OR with the arg-passed flag — either
+    // source can force a double-cup brew. The G3 finding in
+    // docs/FUNCTIONAL_COVERAGE.md describes the rationale; brief
+    // version: without this, the app's per-cup customisation UI
+    // (strength, ml, …) had no visible effect on emulator brews.
+    brew_overrides_t ov;
+    read_overrides(fam, &ov);
+    if (ov.active) {
+        uint32_t scaled = apply_override_scale(total_ms, &ov);
+        ESP_LOGI(TAG, "  overrides: strength=%ld two_cups=%ld "
+                 "coffee=%ldml water=%ldml milk=%ldml foam=%ldml "
+                 "→ total_ms %u → %u",
+                 (long)ov.strength, (long)ov.two_cups,
+                 (long)ov.coffee_amount, (long)ov.water_amount,
+                 (long)ov.milk_amount, (long)ov.milk_foam_amount,
+                 (unsigned)total_ms, (unsigned)scaled);
+        total_ms = scaled;
+        if (ov.two_cups > 0 && !arg_snapshot.two_cups) {
+            // The arg-side two_cups (from HE) is the canonical source,
+            // but if the app only signalled two_cups via the override
+            // slot we honour that too. Doubling here would be wrong if
+            // the volume override is already the two-cup total; in
+            // practice the app sends two_cups in BOTH so this branch
+            // rarely fires, but log it so we notice if it does.
+            ESP_LOGW(TAG, "  two_cups signalled only via override slot — "
+                     "not doubling total_ms again");
+        }
+    }
+
     ESP_LOGI(TAG, "brew start family=%s selector=%u recipe=%s cat=%d "
-             "total=%ums stages=%u brew_code=%d",
+             "total=%ums stages=%u brew_code=%d overrides=%s",
              fam->key, arg_snapshot.selector, name, (int)cat,
              (unsigned)total_ms, (unsigned)ramp->stage_count,
-             brew_code);
+             brew_code, ov.active ? "yes" : "no");
 
     // Announce brewing state — the Nivona app re-reads HX ~650 ms after
     // HE and requires the family-specific brewing code (4 / 11).

@@ -46,6 +46,29 @@ typedef struct {
     nivona_recipe_category_t category;
 } nivona_recipe_t;
 
+// Per-family field offsets inside the temp-recipe register block.
+//
+// The real machine exposes a single HW register (TEMP_RECIPE_REG, 9001)
+// that the app writes BEFORE issuing HE — per-brew strength / volumes /
+// temperatures. Different model families have slightly different field
+// layouts; the offsets here mirror the HA integration's
+// `_STANDARD_RECIPE_LAYOUTS` (brands/nivona.py). A value of 0 means
+// "field not exposed by this family" — read via `temp_recipe_offset()`
+// which returns -1 in that case.
+//
+// We track only the fields the emulator actually uses for brew-ramp
+// scaling: strength, two_cups, and the four fluid volumes. The
+// temperature offsets exist on real hardware but the emulator has no
+// thermal model, so they're not stored here.
+typedef struct {
+    int8_t strength;            // -1 = field absent
+    int8_t two_cups;
+    int8_t coffee_amount;
+    int8_t water_amount;
+    int8_t milk_amount;         // -1 on 600 (no milk system)
+    int8_t milk_foam_amount;
+} nivona_recipe_layout_t;
+
 typedef struct {
     const char *key;            // "600" / "700" / "79x" / … / "8000"
     const char *ble_name;       // Advertised local_name — bare serial
@@ -78,7 +101,21 @@ typedef struct {
     // NULL-terminated semantics: iterate up to recipe_count.
     const nivona_recipe_t *recipes;
     size_t                 recipe_count;
+
+    // Temp-recipe (HW 9001 + offset) field layout — see comment on
+    // `nivona_recipe_layout_t`. Driven by `nivona_brew_task` to scale
+    // ramps according to the app's per-brew overrides.
+    nivona_recipe_layout_t recipe_layout;
 } nivona_family_t;
+
+// Convenience: HW register id for a temp-recipe field on the active
+// family. Returns -1 if the family doesn't expose the requested field.
+// `offset` is one of nivona_recipe_layout_t's members.
+#define NIVONA_TEMP_RECIPE_BASE 9001
+static inline int16_t nivona_temp_recipe_reg(int8_t offset) {
+    return (offset < 0) ? -1
+                        : (int16_t)(NIVONA_TEMP_RECIPE_BASE + offset);
+}
 
 // All known Nivona families. Size via NIVONA_FAMILIES_COUNT.
 extern const nivona_family_t NIVONA_FAMILIES[];

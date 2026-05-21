@@ -6,6 +6,45 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.9.0] — 2026-05-21 — Honor per-brew overrides from the app
+
+Closes finding **G3** from `docs/FUNCTIONAL_COVERAGE.md`. Before
+this release, the Nivona Android app's per-cup customisation UI
+(strength dial, ml sliders) had no visible effect on emulator
+brews — the app writes the picks into the temp-recipe register
+(HW 9001 + field offset) before HE, but `brew_task` used a fixed
+ramp table driven only by the recipe category.
+
+### Added
+
+- **Per-family temp-recipe field layout.** New
+  `nivona_recipe_layout_t` member on `nivona_family_t` carries the
+  byte offsets the app uses for `strength`, `two_cups`,
+  `coffee_amount`, `water_amount`, `milk_amount`, `milk_foam_amount`.
+  Layouts mirror the HA integration's `_STANDARD_RECIPE_LAYOUTS`
+  for each of the 8 known families. Temperature offsets exist on
+  real hardware but the emulator has no thermal model so they
+  aren't tracked.
+- **`apply_override_scale` heuristic** in `nivona_brew.c`. Reads
+  the temp-recipe slot at the start of every brew and, if at
+  least one field is set, scales `total_ms`:
+  - **strength** adds 15 % per unit above zero.
+  - **fluid volume** (coffee + water + milk + foam) is linear
+    against an 80 ml reference, clamped to [0.5 ×, 4.0 ×].
+- Override values + before/after scaling are logged at INFO so
+  testing against the real app is observable on the serial console.
+
+### Notes
+
+- The override values are NOT cleared from NVS after the brew. The
+  real machine consumes them once and discards; the emulator leaves
+  them stale. The app re-writes before every HE so this is invisible
+  in normal use. Triggering a brew via CLI `brew <n>` after the app
+  has written overrides will pick up those overrides — by design,
+  useful for testing.
+- No wire-format change. Only the brew ramp duration changes, and
+  only when the app (or a CLI override) has populated reg 9001.
+
 ## [0.8.2] — 2026-05-21 — V3 pending items + reconstructed audit doc
 
 Closes the three "accepted-for-later" items from 0.8.1 and lands a
