@@ -26,8 +26,18 @@ concurrency:
 
 jobs:
   esp-idf-build:
-    name: ESP-IDF v5.3 / esp32c6
+    name: ESP-IDF v5.3 / ${{ matrix.board }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: xiao_c6
+            target: esp32c6
+          - board: xiao_s3
+            target: esp32s3
+          - board: waveshare_c6_lcd_1_47
+            target: esp32c6
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -43,7 +53,8 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.3
-          target: esp32c6
+          target: ${{ matrix.target }}
+          extra_args: "-DBOARD=${{ matrix.board }}"
           # Stay on the default `idf.py build`. Don't pass `--clean`
           # — the action runs in an ephemeral container so the build
           # is always from scratch anyway.
