@@ -31,11 +31,13 @@ Selectable at build time with `-DBOARD=<name>` (default `xiao_c6`):
 | ----- | ---- | ----- | ----- |
 | `xiao_c6` (default) | ESP32-C6 | 4 MB | Seeed XIAO ESP32-C6. RF switch on GPIO3/14 (PCB antenna / external U.FL). |
 | `xiao_s3` | ESP32-S3 | 8 MB | Seeed XIAO ESP32-S3 / S3 Plus (OPI PSRAM). |
-| `waveshare_c6_lcd_1_47` | ESP32-C6 | 8 MB | Waveshare ESP32-C6-Touch-LCD-1.47. Touchscreen UI added in a later release; headless today. |
+| `waveshare_c6_lcd_1_47` | ESP32-C6 | 8 MB | Waveshare ESP32-C6-Touch-LCD-1.47 — adds a **touchscreen front-panel UI** (JD9853 LCD + AXS5106L touch, LVGL); see [Touchscreen UI](#touchscreen-ui). |
 
 Board profiles live in `boards/<name>/` (each provides `board.c`,
 `sdkconfig.board`, `partitions.csv`). The common config is in
-`sdkconfig.defaults`.
+`sdkconfig.defaults`. The display/touch drivers and the touchscreen UI
+compile only for boards whose profile sets
+`CONFIG_NIVONA_BOARD_HAS_DISPLAY=y`, so the headless boards stay lean.
 
 ## Features
 
@@ -52,6 +54,7 @@ Board profiles live in `boards/<name>/` (each provides `board.c`,
 | Brew cycle     | READY → PRODUCT, progress 0→100%, async unsolicited HX pushes   |
 | Storage        | Numerical + alphanumeric registers persisted in NVS             |
 | Family switch  | CLI `family` command selects 600/700/79x/900/900-light/1030/1040/8000 |
+| Touchscreen UI | Waveshare board only — live front panel (status, brew, cancel, confirm, refill, family) on a 172×320 LVGL display |
 
 ## Prerequisites
 
@@ -110,6 +113,26 @@ forget                   wipe stored BLE bonds
 reboot                   reboot the device
 ```
 
+## Touchscreen UI
+
+On the `waveshare_c6_lcd_1_47` board the 1.47″ 172×320 touchscreen is the
+machine's front panel — another frontend to the same actions as the CLI
+and BLE. It is built with LVGL on Espressif's `esp_lcd_jd9853` (panel) and
+`esp_lcd_touch_axs5106` (touch) drivers (both vendored under
+`components/`), and is compiled in only when the board profile sets
+`CONFIG_NIVONA_BOARD_HAS_DISPLAY=y`.
+
+- **Home** — model + BLE-connection dot; a live state tile
+  (READY / BREWING with progress / prompt banner); tiles for Brew,
+  Cancel, Confirm, Refill and Family; a consumables strip.
+- **Brew picker** — the current family's recipes; tap to start a brew.
+- **Refill** — water / beans / empty-tray.
+- **Family picker** — switch the emulated family (applies on reboot).
+
+State is polled from the FSM at ~7 Hz; buttons call the same internal
+APIs as the telnet/USB CLI (`nivona_brew_start`, `nivona_maint_handle_confirm`,
+`nivona_consumable_set`, `nivona_family_set`).
+
 ## Testing
 
 Python tests in `tests/test_emulator.py` cover protocol helpers, HTTP
@@ -125,8 +148,13 @@ python3 -m pytest tests/ -v -s
 ## Architecture
 
 ```
+boards/<name>/          per-board profile: board.c (board_hal impl) + sdkconfig.board + partitions.csv
+components/
+├── esp_lcd_jd9853/         vendored JD9853 LCD panel driver (Espressif, Apache-2.0)
+├── esp_lcd_touch_axs5106/  vendored AXS5106L touch driver (Espressif, Apache-2.0)
+└── nivona_ui/              LVGL touchscreen front panel (display boards only)
 main/
-├── main.c              application entry: lifecycle, RF switch, SM config
+├── main.c              application entry: lifecycle, board_early_init(), SM config
 ├── nivona_ble.c/h      advertising, GAP events, scan response
 ├── nivona_gatt.c/h     GATT service AD00 with 6 characteristics
 ├── nivona_dis.c/h      Device Information Service (180A)

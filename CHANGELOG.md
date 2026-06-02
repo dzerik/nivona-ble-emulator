@@ -6,6 +6,39 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.12.0] — 2026-06-03 — Touchscreen front panel (Waveshare board)
+
+Turns the **Waveshare ESP32-C6-Touch-LCD-1.47** into a coffee-machine
+front panel: the 1.47″ 172×320 touchscreen shows live status and drives
+the same actions as the CLI/BLE. Built on the multi-board foundation from
+0.11.0 — the display stack compiles only for boards whose profile sets
+`CONFIG_NIVONA_BOARD_HAS_DISPLAY=y`, so the headless boards are unchanged.
+
+### Added
+
+- **Display + touch bring-up** in `boards/waveshare_c6_lcd_1_47/board.c`:
+  JD9853 LCD on SPI2 (with the 34-px column offset for the 172/240
+  visible window) + LEDC PWM backlight, and the AXS5106L capacitive touch
+  on I²C. Espressif's Apache-2.0 `esp_lcd_jd9853` and
+  `esp_lcd_touch_axs5106` drivers are vendored under `components/`. New
+  HAL accessors `board_lcd_panel()`, `board_lcd_panel_io()`,
+  `board_touch()`, `board_set_backlight()`.
+- **`nivona_ui` component** — LVGL v9 via `esp_lvgl_port` (20-line double
+  draw buffer, no PSRAM) rendering a tile dashboard: live state tile
+  (READY / BREWING + progress / prompt banner), Brew/Cancel/Confirm/
+  Refill/Family tiles, a consumables strip, plus brew-recipe, refill and
+  family sub-screens. A ~7 Hz timer polls `nivona_fsm_get_status` and the
+  buttons call the same internal APIs as the CLI.
+
+### Fixed
+
+- **Brew now clears a pending soft prompt at start.** `brew_task` left the
+  cold-start `FLUSH_REQUIRED` (HX `message=20`) set for the whole of the
+  first brew after boot, so the brewing status carried a stale "flush
+  required". It now sets `manipulation = NONE` when the brew begins (a
+  machine actively brewing does not also ask for a flush);
+  `nivona_maint_reevaluate()` at brew end re-surfaces any real prompt.
+
 ## [0.11.0] — 2026-06-02 — Multi-board build (board profiles + HAL)
 
 ### Added

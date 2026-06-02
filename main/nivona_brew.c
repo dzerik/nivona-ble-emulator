@@ -324,6 +324,14 @@ static void brew_task(void *arg) {
     nivona_fsm_set_process(brew_code, (int16_t)arg_snapshot.selector);
     nivona_fsm_set_progress(0);
     nivona_fsm_set_info(0);
+    // Clear any soft prompt that was pending when the brew started — most
+    // notably the cold-start FLUSH_REQUIRED. A real machine actively
+    // brewing does not simultaneously ask for a flush, so the brewing HX
+    // must report message=0. nivona_brew_start already rejected hard
+    // prompts, so manipulation here is NONE or a soft prompt; the brew
+    // supersedes it. nivona_maint_reevaluate() at brew end re-surfaces
+    // FILL_WATER / EMPTY_TRAYS etc. if a tank ran low during the brew.
+    nivona_fsm_set_manipulation(MANIP_NONE);
     push_status();
 
     // Compute per-stage wall-clock budget from weights.
