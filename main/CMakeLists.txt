@@ -1,3 +1,28 @@
+set(_req
+    nvs_flash
+    bt
+    esp_hw_support
+    console
+    esp_wifi
+    esp_netif
+    esp_event
+    esp_http_server
+    app_update
+    mdns
+    lwip
+    driver
+)
+if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
+    list(APPEND _req
+        esp_lcd
+        esp_lcd_jd9853
+        esp_lcd_touch
+        esp_driver_spi
+        esp_driver_ledc
+        esp_driver_gpio
+    )
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -21,17 +46,11 @@ idf_component_register(
         "nivona_ota.c"
         "nivona_telnet.c"
     INCLUDE_DIRS "." "${CMAKE_SOURCE_DIR}/boards"
-    REQUIRES
-        nvs_flash
-        bt
-        esp_hw_support
-        console
-        esp_wifi
-        esp_netif
-        esp_event
-        esp_http_server
-        app_update
-        mdns
-        lwip
-        driver
+    REQUIRES ${_req}
 )
+
+if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
+    target_include_directories(__idf_main PRIVATE
+        "${CMAKE_SOURCE_DIR}/components/esp_lcd_jd9853/include"
+    )
+endif()

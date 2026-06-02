@@ -10,4 +10,4 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/waveshare_c6_lcd_1_47/partitions.
 CONFIG_PARTITION_TABLE_FILENAME="boards/waveshare_c6_lcd_1_47/partitions.csv"
 
 # Display/UI lands in the follow-up plan — headless for now.
-CONFIG_NIVONA_BOARD_HAS_DISPLAY=n
+CONFIG_NIVONA_BOARD_HAS_DISPLAY=y
