@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "${CMAKE_SOURCE_DIR}/boards/${BOARD}/board.c"
         "nivona_ble.c"
         "nivona_gatt.c"
         "nivona_dis.c"
@@ -19,7 +20,7 @@ idf_component_register(
         "nivona_wifi.c"
         "nivona_ota.c"
         "nivona_telnet.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "${CMAKE_SOURCE_DIR}/boards"
     REQUIRES
         nvs_flash
         bt

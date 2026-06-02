@@ -4,7 +4,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "driver/gpio.h"
 #include "esp_ota_ops.h"
 #include "esp_bt.h"
 
@@ -27,6 +26,7 @@
 #include "nivona_wifi.h"
 #include "nivona_ota.h"
 #include "nivona_telnet.h"
+#include "board.h"
 
 static const char *TAG = "nivona_emu";
 
@@ -73,24 +73,8 @@ static void host_task(void *p) {
     nimble_port_freertos_deinit();
 }
 
-// XIAO ESP32-C6 RF front-end (FM8625H):
-//   GPIO3  = RF_SWITCH_EN  → HIGH enables the RF switch (required)
-//   GPIO14 = RF_ANT_SELECT → LOW = onboard PCB antenna, HIGH = external U.FL
-static void xiao_c6_rf_init(void) {
-    gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << 3) | (1ULL << 14),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&cfg);
-    gpio_set_level(3, 1);   // enable RF switch
-    gpio_set_level(14, 1);  // external U.FL antenna
-}
-
 void app_main(void) {
-    xiao_c6_rf_init();
+    board_early_init();
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
