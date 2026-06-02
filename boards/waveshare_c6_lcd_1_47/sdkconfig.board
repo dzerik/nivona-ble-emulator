@@ -11,3 +11,7 @@ CONFIG_PARTITION_TABLE_FILENAME="boards/waveshare_c6_lcd_1_47/partitions.csv"
 
 # Display/UI lands in the follow-up plan — headless for now.
 CONFIG_NIVONA_BOARD_HAS_DISPLAY=y
+
+# LVGL fonts needed by the Phase-4 UI screens.
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y

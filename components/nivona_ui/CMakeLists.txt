@@ -15,7 +15,9 @@ endif()
 idf_component_register(
     SRCS ${_srcs}
     INCLUDE_DIRS "include"
-    PRIV_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/boards"
+    PRIV_INCLUDE_DIRS
+        "${CMAKE_SOURCE_DIR}/boards"
+        "${CMAKE_SOURCE_DIR}/main"
     REQUIRES ${_requires}
     PRIV_REQUIRES ${_priv_requires})
 
