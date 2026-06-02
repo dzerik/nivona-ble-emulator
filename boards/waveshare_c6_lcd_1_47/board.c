@@ -5,8 +5,8 @@
 // Self-test (NIVONA_DISPLAY_SELFTEST=1): fills screen solid RED at boot.
 // Touch self-test (NIVONA_TOUCH_SELFTEST=1): polls touch and logs coords.
 
-#define NIVONA_DISPLAY_SELFTEST 1
-#define NIVONA_TOUCH_SELFTEST   1
+#define NIVONA_DISPLAY_SELFTEST 0
+#define NIVONA_TOUCH_SELFTEST   0
 
 #include "board.h"
 
@@ -104,8 +104,9 @@ void board_set_backlight(uint8_t pct)
 }
 
 // ---- Public accessors ----
-esp_lcd_panel_handle_t board_lcd_panel(void) { return s_panel; }
-esp_lcd_touch_handle_t board_touch(void)     { return s_touch; }
+esp_lcd_panel_handle_t    board_lcd_panel(void)    { return s_panel; }
+esp_lcd_panel_io_handle_t board_lcd_panel_io(void) { return s_io; }
+esp_lcd_touch_handle_t    board_touch(void)        { return s_touch; }
 
 // ---- Touch self-test task (temporary, guarded by NIVONA_TOUCH_SELFTEST) ----
 #if NIVONA_TOUCH_SELFTEST
@@ -175,6 +176,9 @@ void board_early_init(void)
 
     // --- Backlight ---
     backlight_init();
+    board_set_backlight(100);   // turn the panel on. Previously this was
+                                // only done inside the display selftest, so
+                                // with the selftest off the screen stayed dark.
 
 #if NIVONA_DISPLAY_SELFTEST
     // Temporary self-test: fill entire screen RED (RGB565 big-endian).

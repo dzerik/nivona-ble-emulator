@@ -29,11 +29,13 @@ void board_early_init(void);
 // Display accessors — only declared on boards that have a panel. Defined
 // by that board's board.c and consumed by the nivona_ui component (added
 // in the follow-up UI plan).
+#include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
-esp_lcd_panel_handle_t board_lcd_panel(void);
-esp_lcd_touch_handle_t board_touch(void);
-void                   board_set_backlight(uint8_t pct);
+esp_lcd_panel_handle_t    board_lcd_panel(void);
+esp_lcd_panel_io_handle_t board_lcd_panel_io(void);
+esp_lcd_touch_handle_t    board_touch(void);
+void                      board_set_backlight(uint8_t pct);
 #endif
 
 #ifdef __cplusplus

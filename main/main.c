@@ -27,6 +27,9 @@
 #include "nivona_ota.h"
 #include "nivona_telnet.h"
 #include "board.h"
+#if CONFIG_NIVONA_BOARD_HAS_DISPLAY
+#include "nivona_ui.h"
+#endif
 
 static const char *TAG = "nivona_emu";
 
@@ -154,6 +157,12 @@ void app_main(void) {
     nivona_wifi_init();
     nivona_ota_start();
     nivona_telnet_start();
+
+#if CONFIG_NIVONA_BOARD_HAS_DISPLAY
+    if (board_info()->has_display) {
+        nivona_ui_start();
+    }
+#endif
 
     ESP_LOGI(TAG, "nivona emulator up");
 }

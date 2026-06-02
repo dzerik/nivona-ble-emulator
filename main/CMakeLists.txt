@@ -22,6 +22,7 @@ if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
         esp_driver_ledc
         esp_driver_gpio
         esp_driver_i2c
+        nivona_ui
     )
 endif()
 
@@ -55,5 +56,6 @@ if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
     target_include_directories(__idf_main PRIVATE
         "${CMAKE_SOURCE_DIR}/components/esp_lcd_jd9853/include"
         "${CMAKE_SOURCE_DIR}/components/esp_lcd_touch_axs5106/include"
+        "${CMAKE_SOURCE_DIR}/components/nivona_ui/include"
     )
 endif()
