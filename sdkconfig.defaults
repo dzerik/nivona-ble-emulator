@@ -1,14 +1,6 @@
-# Target: Seeed XIAO ESP32-C6 (ESP32-C6 RISC-V, 4 MB flash, BLE 5.3)
-CONFIG_IDF_TARGET="esp32c6"
-
-# Flash
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
-
-# Custom partitions (scaled to 4 MB)
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+# NOTE: target / flash size / partition table are set per-board in
+# boards/<BOARD>/sdkconfig.board (chained ahead of this file by the root
+# CMakeLists.txt). Everything below is common to all boards.
 
 # Console via native USB Serial/JTAG
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
