@@ -25,11 +25,17 @@ layouts, and a finite-state machine that simulates brewing cycles.
 
 ## Hardware
 
-Primary target: **Seeed XIAO ESP32-C6** (onboard PCB antenna or external
-U.FL — GPIO14 switches between them, see `main/main.c::xiao_c6_rf_init`).
+Selectable at build time with `-DBOARD=<name>` (default `xiao_c6`):
 
-Also builds for **Seeed XIAO ESP32-S3 / S3 Plus** with minor changes to
-`sdkconfig.defaults` (target + PSRAM config).
+| BOARD | Chip | Flash | Notes |
+| ----- | ---- | ----- | ----- |
+| `xiao_c6` (default) | ESP32-C6 | 4 MB | Seeed XIAO ESP32-C6. RF switch on GPIO3/14 (PCB antenna / external U.FL). |
+| `xiao_s3` | ESP32-S3 | 8 MB | Seeed XIAO ESP32-S3 / S3 Plus (OPI PSRAM). |
+| `waveshare_c6_lcd_1_47` | ESP32-C6 | 8 MB | Waveshare ESP32-C6-Touch-LCD-1.47. Touchscreen UI added in a later release; headless today. |
+
+Board profiles live in `boards/<name>/` (each provides `board.c`,
+`sdkconfig.board`, `partitions.csv`). The common config is in
+`sdkconfig.defaults`.
 
 ## Features
 
@@ -60,13 +66,11 @@ Also builds for **Seeed XIAO ESP32-S3 / S3 Plus** with minor changes to
 cp main/wifi_secrets.h.template main/wifi_secrets.h
 $EDITOR main/wifi_secrets.h    # fill WIFI_SSID / WIFI_PASS
 
-# 2. Configure ESP-IDF
+# 2. Build and flash
 . $IDF_PATH/export.sh
-idf.py set-target esp32c6      # or esp32s3 — edit sdkconfig.defaults accordingly
-
-# 3. Build and flash
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -DBOARD=xiao_c6 build                 # default; or xiao_s3 / waveshare_c6_lcd_1_47
+idf.py -DBOARD=xiao_c6 -p /dev/ttyACM0 flash monitor
+# switching board (target/flash changes): idf.py -DBOARD=<new> fullclean
 ```
 
 After the first USB flash, all subsequent updates go over the air:

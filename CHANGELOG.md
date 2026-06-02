@@ -6,6 +6,30 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.11.0] — 2026-06-02 — Multi-board build (board profiles + HAL)
+
+### Added
+
+- **Build-time board profiles** under `boards/<name>/`, selected with
+  `idf.py -DBOARD=<name>` (default `xiao_c6`). Each profile carries its
+  own `sdkconfig.board`, `partitions.csv`, and `board.c` implementing the
+  new `board_hal` interface (`board_info()`, `board_early_init()`).
+- **Three first-class boards:** `xiao_c6` (ESP32-C6, 4 MB — unchanged
+  default), `xiao_s3` (ESP32-S3, 8 MB), `waveshare_c6_lcd_1_47`
+  (ESP32-C6, 8 MB, headless for now — touchscreen UI in a later release).
+- **CI matrix** builds all three profiles; a regression on any board
+  fails the build.
+
+### Changed
+
+- `main.c` no longer contains board-specific RF-switch code; it calls
+  `board_early_init()`. The XIAO-C6 RF-switch logic moved verbatim into
+  `boards/xiao_c6/board.c`.
+- Target / flash size / partition table moved out of `sdkconfig.defaults`
+  into each board's `sdkconfig.board`. The generated `sdkconfig` now lives
+  in the build directory, so switching boards (after `fullclean`)
+  regenerates it cleanly with no stale target/flash/partition values.
+
 ## [0.10.0] — 2026-06-02 — Sync protocol with the HA integration's nivona package
 
 Cross-checked the emulator's protocol surface against the HA

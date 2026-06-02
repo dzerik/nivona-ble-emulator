@@ -15,10 +15,9 @@ cd nivona-ble-emulator
 cp main/wifi_secrets.h.template main/wifi_secrets.h
 # edit main/wifi_secrets.h with your SSID / password / hostname
 
-# 3. Build for your target (default sdkconfig is esp32c6)
+# 3. Build for your target (default board is xiao_c6)
 . $IDF_PATH/export.sh
-idf.py set-target esp32c6   # or esp32, esp32s3, …
-idf.py build
+idf.py -DBOARD=xiao_c6 build   # or xiao_s3 / waveshare_c6_lcd_1_47
 
 # 4. Flash + monitor
 idf.py -p /dev/ttyUSB0 flash monitor
@@ -33,6 +32,7 @@ be set. The CI uses Espressif's official Docker image at v5.3 — see
 | Path | What |
 |------|------|
 | `main/` | All C sources for the emulator firmware |
+| `boards/` | Per-board profiles: `board.c` (HAL impl), `sdkconfig.board`, `partitions.csv` |
 | `tests/` | Python BLE integration tests (require real hardware) |
 | `docs/AUDIT_V3.md` | Reconstructed table of every audit finding, mapped to its fix commit |
 | `docs/FUNCTIONAL_COVERAGE.md` | Emulator vs real Nivona app — gap list (G1–G6) |
