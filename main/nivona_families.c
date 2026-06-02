@@ -19,12 +19,13 @@ static const char *TAG = "nivona_fam";
 //   All others    → 8 / 11
 // See docs/NIVONA_RE_NOTES.md §Phase A.
 //
-// Recipe tables mirror custom_components/melitta_barista/brands/nivona.py
-// (Python source of truth for HA-side). Selectors are the HE payload
-// byte[3] values the app sends. Categories drive the brew ramp shape
-// in nivona_brew_task (Phase C-lite).
+// Recipe tables mirror custom_components/melitta_barista/brands/nivona/
+// (the Python source of truth for HA-side, split per-family into
+// _family_<key>.py). Selectors are the HE payload byte[3] values the
+// app sends. Categories drive the brew ramp shape in nivona_brew_task
+// (Phase C-lite).
 
-// ---- Per-family recipe tables (see brands/nivona.py) ----
+// ---- Per-family recipe tables (see brands/nivona/_family_*.py) ----
 
 static const nivona_recipe_t RECIPES_600[] = {
     { 0, "Espresso",    NIVONA_CAT_ESPRESSO   },
@@ -102,12 +103,25 @@ static const nivona_recipe_t RECIPES_8000[] = {
     { 5, "Latte Macchiato", NIVONA_CAT_MILK_DRINK },
     { 6, "Milk",            NIVONA_CAT_MILK_ONLY  },
     { 7, "Hot Water",       NIVONA_CAT_WATER      },
+    // Chilled-brew selectors — exposed only by the NICR 8107, which is
+    // the concrete model this family emulates (ble_name 8107…). The app
+    // lists them as separate recipes and sends them with the HE chilled
+    // flag byte (payload[5] = 0x00) instead of the normal 0x01. Mirrors
+    // RECIPES_8000_CHILLED in brands/nivona/_family_8000.py, applied
+    // there for prefix 8107 via capabilities_for_model(). The chilled
+    // temperature ramp itself is not modelled — these reuse the base
+    // category ramp (the emulator has no thermal model; FUNCTIONAL_COVERAGE
+    // G2). STATS_8000.recipe_id_mask already enables 8/9/10.
+    { 8,  "Chilled Espresso",  NIVONA_CAT_ESPRESSO  },
+    { 9,  "Chilled Lungo",     NIVONA_CAT_COFFEE    },
+    { 10, "Chilled Americano", NIVONA_CAT_AMERICANO },
 };
 
 #define COUNT(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-// Per-family temp-recipe (HW 9001 + offset) layouts. Mirrors
-// `brands/nivona.py:_STANDARD_RECIPE_LAYOUTS`. Only the fields used
+// Per-family temp-recipe (HW 9001 + offset) layouts. Mirrors the
+// `_STANDARD_RECIPE_LAYOUTS` assembled in brands/nivona/__init__.py
+// from each _family_*.py's RecipeFieldLayout. Only the fields used
 // by the emulator's ramp-scaling heuristic are tracked (strength,
 // two_cups, four fluid volumes). Temperatures exist on real hardware
 // but the emulator has no thermal model.
@@ -131,9 +145,9 @@ const nivona_family_t NIVONA_FAMILIES[] = {
     { "700",       "7591000001-----",   "NICR 759",   8,     11,    1,     0,    0,    0x0B,  RECIPES_700,      COUNT(RECIPES_700),        LAYOUT_700  },
     { "79x",       "7951000001-----",   "NICR 795",   8,     11,    1,     0,    0,    0x0B,  RECIPES_79X,      COUNT(RECIPES_79X),        LAYOUT_79X  },
     { "900",       "9301000001-----",   "NICR 930",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900),        LAYOUT_900  },
-    { "900-light", "9701000001-----",   "NICR 970",   8,     11,    10,    1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900),        LAYOUT_900  },
-    { "1030",      "0301000001-----",   "NICR 1030",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1030,     COUNT(RECIPES_1030),       LAYOUT_1000 },
-    { "1040",      "0401000001-----",   "NICR 1040",  8,     11,    10,    1,    1,    0x0B,  RECIPES_1040,     COUNT(RECIPES_1040),       LAYOUT_1000 },
+    { "900-light", "9701000001-----",   "NICR 970",   8,     11,    1,     1,    0,    0x0B,  RECIPES_900,      COUNT(RECIPES_900),        LAYOUT_900  },
+    { "1030",      "0301000001-----",   "NICR 1030",  8,     11,    1,     1,    1,    0x0B,  RECIPES_1030,     COUNT(RECIPES_1030),       LAYOUT_1000 },
+    { "1040",      "0401000001-----",   "NICR 1040",  8,     11,    1,     1,    1,    0x0B,  RECIPES_1040,     COUNT(RECIPES_1040),       LAYOUT_1000 },
     { "8000",      "8107000001-----",   "NIVO 8107",  3,     4,     1,     1,    1,    0x04,  RECIPES_8000,     COUNT(RECIPES_8000),       LAYOUT_8000 },
 };
 

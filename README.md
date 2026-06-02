@@ -144,7 +144,9 @@ main/
   `https://github.com/mpapierski/esp-coffee-bridge` — especially `docs/NIVONA.md`
 - HA integration — source of truth for protocol constants:
   `../custom_components/melitta_barista/protocol.py`
-  `../custom_components/melitta_barista/brands/nivona.py`
+  `../custom_components/melitta_barista/brands/nivona/` (package, split
+  per family into `_family_<key>.py`; crypto in `_crypto.py`, register
+  bases in `_registers.py`, serial-prefix → family in `_prefixes.py`)
 
 ## Security notes
 

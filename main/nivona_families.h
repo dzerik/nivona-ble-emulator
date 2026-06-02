@@ -52,7 +52,8 @@ typedef struct {
 // that the app writes BEFORE issuing HE — per-brew strength / volumes /
 // temperatures. Different model families have slightly different field
 // layouts; the offsets here mirror the HA integration's
-// `_STANDARD_RECIPE_LAYOUTS` (brands/nivona.py). A value of 0 means
+// `_STANDARD_RECIPE_LAYOUTS` (brands/nivona/, assembled in __init__.py
+// from each _family_*.py's RecipeFieldLayout). A value of 0 means
 // "field not exposed by this family" — read via `temp_recipe_offset()`
 // which returns -1 in that case.
 //
@@ -82,7 +83,16 @@ typedef struct {
 
     // Phase C-lite — brew payload scaling (populated but not yet
     // consumed; HW override handler will read it in a later slice).
-    uint8_t fluid_scale;        // 900/1030/1040 = 10, others = 1
+    uint8_t fluid_scale;        // ml ×N marker. Mirrors the surviving
+                                // fluid_scale_factor=10 on NICR 9xx
+                                // (brands/nivona/_family_900.py:
+                                // CAPABILITIES_900); every other family
+                                // is 1. NOTE: the integration's actual
+                                // HW write-path scaling (RecipeFieldLayout
+                                // .fluid_write_scale_10) is currently
+                                // False everywhere — reverted pending a
+                                // live trace — so this marker is unused
+                                // by the emulator too.
     uint8_t has_milk_system;    // 900/1030/1040/8000 = 1, others = 0
     uint8_t has_powder_lid;     // 1030/1040/8000 = 1, others = 0
                                 // (machines with a ground-coffee chute

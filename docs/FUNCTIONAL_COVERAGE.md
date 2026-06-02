@@ -13,7 +13,7 @@ catalogued below with impact and mitigation.
 This document was produced by parallel inventories of (a) what the
 app expects (sources: `melitta-ha-integration/docs/NIVONA.md`,
 `NIVONA_RE_NOTES.md`, `NIVONA_EMULATOR_AUDIT_V2.md`, and the
-HA-side parser `brands/nivona.py`) and (b) what the emulator
+HA-side parser `brands/nivona/`) and (b) what the emulator
 currently implements (sources: `main/*.c`, `main/*.h`).
 
 ## Coverage matrix
@@ -41,7 +41,7 @@ Legend: ✓ = match, ⚠ = partial / gap (see notes), ✗ = missing.
 | **HX `message` byte 20** | flush-required | ✓ | `MANIP_FLUSH_REQUIRED=20` |
 | **HX `info` byte** | always 0 (verified app-side) | ✓ | warning emitted on non-zero |
 | **HE start brew** | `[0, mode, 0, selector, 0, flags, 0…]` 18 bytes | ✓ | `nivona_dispatch.c:235-293`, validates mode + flags |
-| **HE flag 0x00 (ChilledBrew)** | accepted on NICR 1040 firmware | ⚠ G2 | accepted but no chilled-specific behavior |
+| **HE chilled brew (NICR 8107 selectors 8/9/10, flag 0x00)** | Chilled Espresso/Lungo/Americano as separate recipes | ⚠ G2 | selectors now in `RECIPES_8000` (since emu-v0.10.0) so the brew starts; chilled temperature ramp still unmodelled |
 | **HW temp-recipe register** | strength/coffee/water/milk amounts written to reg 9001 before HE | ✓ (since emu-v0.8.3) | per-family field layouts in `nivona_family_t.recipe_layout`; `brew_task` reads + applies strength + volume scaling |
 | **HZ cancel** | abort active brew | ✓ | `nivona_brew_cancel` |
 | **HY confirm prompt** | clears manipulation, re-evaluates | ✓ | `nivona_dispatch.c:322-333` |
@@ -86,20 +86,27 @@ so this is not blocking in practice.
 **Action:** keep zeros; revisit if a future Android version starts
 filtering on these bytes.
 
-### G2 — ChilledBrew flag (HE flags=0x00) has no per-recipe effect
+### G2 — Chilled-brew temperature ramp is not modelled
 
 **Severity:** Low
-**Location:** `nivona_dispatch.c:handle_he` (accepts 0x00 / 0x01),
+**Location:** `nivona_dispatch.c:handle_he` (accepts flags 0x00 / 0x01),
 `nivona_brew.c:brew_task` (ramp depends only on recipe category).
-**What the app does:** On NICR 1040 with firmware `1040A015G15` the
-app can issue `HE flags=0x00` to request a "ChilledBrew" — different
-temperature ramp, lower wear on heating element.
-**Symptom:** the brew completes at the same speed as a regular brew;
-wear counters tick at the same rate.
-**Action:** add a `chilled` field on `brew_arg_t` and a faster ramp
-in `RAMPS` table when set. Only NICR 1040 is affected. Easy fix; not
-implemented because we have no way to verify the actual chilled
-ramp duration against real hardware.
+**Update (emu-v0.10.0):** the chilled-brew *path* now works. The NICR
+8107 exposes chilled selectors 8 (Chilled Espresso), 9 (Chilled
+Lungo) and 10 (Chilled Americano), which the app sends with the HE
+chilled flag byte (`payload[5] = 0x00`). These are now present in
+`RECIPES_8000` (mirroring `brands/nivona/_family_8000.py:
+RECIPES_8000_CHILLED`), so the emulator brews them instead of
+NACKing selector ≥ 8 as before.
+**What the app does:** A chilled brew uses a different temperature
+ramp (cold/lukewarm water, lower wear on the heating element).
+**Remaining gap:** the emulator runs chilled selectors on the **base
+category ramp** — same duration and wear as the hot variant — because
+it has no thermal model. A faster/cooler ramp would need the real
+machine's flow-rate-vs-temperature curve, which we can't verify
+without a hardware trace.
+**Action:** add a `chilled` field on `brew_arg_t` and a distinct ramp
+once a real chilled-brew trace is available to calibrate against.
 
 ### G3 — Temp-recipe HW overrides (register 9001) — CLOSED in emu-v0.8.3
 
@@ -114,7 +121,7 @@ APK:5103). The machine consumes these for the upcoming brew, then
 the values are discarded.
 **Resolution:** `brew_task` now reads the temp-recipe slot at the
 start of every brew via per-family field offsets that mirror
-`brands/nivona.py:_STANDARD_RECIPE_LAYOUTS`. A heuristic scaling
+`brands/nivona/`'s `_STANDARD_RECIPE_LAYOUTS`. A heuristic scaling
 factor is applied to `total_ms`:
 - **strength** — each unit above zero adds 15 % to brew duration.
 - **fluid volumes** — total of coffee + water + milk + milk_foam,

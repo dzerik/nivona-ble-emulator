@@ -6,6 +6,49 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.10.0] — 2026-06-02 — Sync protocol with the HA integration's nivona package
+
+Cross-checked the emulator's protocol surface against the HA
+integration's `brands/nivona/` package and `protocol.py` (the
+documented source of truth). The crypto core (RC4 master key, the
+256-byte HU table, the 2-round verifier), the frame format, the
+family process codes, the recipe/temp-recipe layouts and the
+per-family stat-ID tables were already in lockstep. Three deltas
+were found and closed.
+
+### Added
+
+- **NICR 8107 chilled-brew selectors (8/9/10).** `RECIPES_8000` now
+  carries Chilled Espresso (8), Chilled Lungo (9) and Chilled
+  Americano (10), mirroring `RECIPES_8000_CHILLED` in
+  `brands/nivona/_family_8000.py`. The app lists these as separate
+  recipes and sends them with the HE chilled flag byte
+  (`payload[5] = 0x00`). Previously the emulator — which advertises
+  the 8107 serial — NACKed any HE with selector ≥ 8, so chilled
+  brews could not start at all. They now complete using the base
+  category ramp (`STATS_8000.recipe_id_mask` already enabled
+  8/9/10). This refines gap **G2** in `docs/FUNCTIONAL_COVERAGE.md`:
+  the chilled *path* now works; the chilled *temperature ramp* is
+  still unmodelled (no thermal model on the emulator).
+
+### Changed
+
+- **`fluid_scale` field corrected for 900-light / 1030 / 1040.** The
+  integration declares `fluid_scale_factor=10` only on the NICR 9xx
+  (`CAPABILITIES_900`); 900-light, 1030 and 1040 carry no ×10
+  marker, and the actual HW write-path scaling
+  (`RecipeFieldLayout.fluid_write_scale_10`) is currently `False`
+  everywhere. The emulator's table had `fluid_scale = 10` on all
+  four; reverted 900-light/1030/1040 to `1` so the (currently
+  unused) marker matches the integration. NICR 9xx stays at 10.
+
+### Docs
+
+- Refreshed every `brands/nivona.py` reference (single module) to the
+  current `brands/nivona/` package layout — in `nivona_families.c/.h`,
+  `README.md`, `CLAUDE.md`, and `docs/FUNCTIONAL_COVERAGE.md`.
+  Historical CHANGELOG entries are left untouched.
+
 ## [0.9.0] — 2026-05-21 — Honor per-brew overrides from the app
 
 Closes finding **G3** from `docs/FUNCTIONAL_COVERAGE.md`. Before
