@@ -1,0 +1,13 @@
+# main/Kconfig.projbuild
+menu "Nivona emulator board"
+
+config NIVONA_BOARD_HAS_DISPLAY
+    bool "Board has an LCD/touch panel (compiles the nivona_ui component)"
+    default n
+    help
+        Set by the selected board profile's sdkconfig.board. When y, the
+        nivona_ui component and its LVGL/esp_lcd dependencies are pulled
+        into the build and the touchscreen front-panel is started at boot.
+        Leave n for headless boards.
+
+endmenu
