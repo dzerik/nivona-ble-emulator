@@ -20,6 +20,14 @@ message(STATUS "Building for BOARD='${BOARD}' (${_board_dir})")
 set(SDKCONFIG_DEFAULTS
     "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults;${_board_dir}/sdkconfig.board")
 
+# Keep each build's generated sdkconfig INSIDE the build directory instead of
+# the project root. `idf.py fullclean` wipes the build dir, so switching boards
+# (with the documented fullclean) always regenerates sdkconfig fresh from the
+# board's sdkconfig.board — no stale CONFIG_IDF_TARGET / flash size / partition
+# path leaking from a previously-built board. The target is taken from the
+# SDKCONFIG_DEFAULTS chain above (the board's sdkconfig.board sets it).
+set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig" CACHE PATH "Per-build sdkconfig location" FORCE)
+
 # BOARD is a CACHE variable, so main/CMakeLists.txt can read ${BOARD} directly
 # for component selection — no extra variable needed.
 
