@@ -16,10 +16,12 @@ if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
     list(APPEND _req
         esp_lcd
         esp_lcd_jd9853
-        esp_lcd_touch
+        esp_lcd_touch_axs5106
+        espressif__esp_lcd_touch
         esp_driver_spi
         esp_driver_ledc
         esp_driver_gpio
+        esp_driver_i2c
     )
 endif()
 
@@ -52,5 +54,6 @@ idf_component_register(
 if(CONFIG_NIVONA_BOARD_HAS_DISPLAY)
     target_include_directories(__idf_main PRIVATE
         "${CMAKE_SOURCE_DIR}/components/esp_lcd_jd9853/include"
+        "${CMAKE_SOURCE_DIR}/components/esp_lcd_touch_axs5106/include"
     )
 endif()
