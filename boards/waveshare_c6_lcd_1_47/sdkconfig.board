@@ -1,0 +1,13 @@
+# Waveshare ESP32-C6-Touch-LCD-1.47 — ESP32-C6, 8 MB flash, JD9853 LCD +
+# CST816 touch (panel brought up in the UI plan; headless here).
+CONFIG_IDF_TARGET="esp32c6"
+
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="boards/waveshare_c6_lcd_1_47/partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="boards/waveshare_c6_lcd_1_47/partitions.csv"
+
+# Display/UI lands in the follow-up plan — headless for now.
+CONFIG_NIVONA_BOARD_HAS_DISPLAY=n
