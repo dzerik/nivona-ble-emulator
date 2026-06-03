@@ -16,6 +16,7 @@
 #include "nivona_ble.h"
 #include "nivona_gatt.h"
 #include "nivona_fsm.h"
+#include "nivona_families.h"
 #include "nivona_consumables.h"
 #include "nivona_maint.h"
 #include "nivona_maint_cycle.h"
@@ -33,12 +34,13 @@
 
 static const char *TAG = "nivona_emu";
 
-// Default BLE name = serial number directly (no "NIVONA-" prefix).
+// BLE local name = the active family's bare serial (no "NIVONA-" prefix).
 // The official Nivona Android app reads Peripheral.Name, strips trailing
-// dashes, and takes Substring(0,4) as the model code (8101/8103/8107 →
-// NICR 8xxx). A leading "NIVONA-" makes it read "NIVO" and fail
-// model detection (EugsterMobileApp.decompiled.cs:7381).
-#define DEFAULT_BLE_NAME "8107000001-----"
+// dashes, and takes Substring(0,4) as the model code. A leading "NIVONA-"
+// makes it read "NIVO" and fail model detection. Per-family serials live
+// in the families table (nivona_family_t.ble_name) and are applied in
+// app_main from nivona_family_current() — so switching family changes the
+// advertised model.
 
 void ble_store_config_init(void);
 
@@ -53,6 +55,15 @@ static void on_sync(void) {
     uint8_t rnd_addr[6];
     memcpy(rnd_addr, base, 5);
     rnd_addr[5] = 0xF1;  // random static prefix (top 2 bits = 11)
+    // Make the address family-specific so switching the emulated model
+    // presents as a distinct BLE device (distinct MAC *and* name) instead
+    // of the same device renamed. Mix an 8-bit hash of the family key into
+    // the low byte; the other bytes stay chip-derived (stable per board).
+    const nivona_family_t *fam = nivona_family_current();
+    uint8_t fam_hash = 0;
+    for (const char *p = fam->key; *p; ++p)
+        fam_hash = (uint8_t)(fam_hash * 31u + (uint8_t)*p);
+    rnd_addr[0] = fam_hash;
 
     int rc = ble_hs_id_set_rnd(rnd_addr);
     if (rc != 0) {
@@ -121,7 +132,14 @@ void app_main(void) {
         return;
     }
 
-    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(DEFAULT_BLE_NAME));
+    // Advertise the active family's serial as the BLE local name, and use
+    // it as the DIS serial too. Was hardcoded, so switching family never
+    // changed the advertised model.
+    const char *ble_name = nivona_family_current()->ble_name;
+    nivona_dis_set(NULL, NULL, ble_name, NULL, NULL, NULL);
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(ble_name));
+    ESP_LOGI(TAG, "BLE local name '%s' (family %s)",
+             ble_name, nivona_family_current()->key);
 
     // IMPORTANT: TX power must be set AFTER controller enable (done inside
     // nimble_port_init) and AFTER ble_svc_gap_device_name_set but BEFORE

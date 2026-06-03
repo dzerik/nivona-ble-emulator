@@ -6,6 +6,34 @@ fixes, new brand-emulation coverage, and protocol-fidelity work happen
 here without touching the integration's release cycle, and vice versa.
 Emulator releases are tagged `emu-v<MAJOR>.<MINOR>.<PATCH>`.
 
+## [0.12.1] — 2026-06-03 — Fix family switching (boot-loop, name, MAC)
+
+Switching the emulated machine model and rebooting used to brick the
+device into a boot-loop, and the advertised model never actually changed.
+All three are fixed.
+
+### Fixed
+
+- **Boot-loop after switching family.** `restore_once()` read the saved
+  family key from NVS *inside* a `portENTER_CRITICAL` spinlock. NVS / SPI-
+  flash operations must run with interrupts enabled — doing the read with
+  interrupts disabled makes the flash driver take its mutex in an illegal
+  context and `abort()`s in `lock_acquire_generic`, boot-looping forever.
+  The default `8000` has no NVS entry (the read is skipped), so the crash
+  only appeared once a family had been switched and persisted — which also
+  explains the earlier "corrupted NVS" boot-loops. The NVS read now runs
+  outside the critical section; the spinlock guards only the final pointer
+  publish.
+- **Advertised BLE name now follows the family.** The local name was
+  hardcoded to `8107000001-----`, so the Nivona app always detected an
+  8107 regardless of the selected family. It is now taken from
+  `nivona_family_current()->ble_name` (e.g. `9301000001-----` → NICR 930),
+  and the DIS serial is set to match.
+- **Random static address is now family-specific.** An 8-bit hash of the
+  family key is mixed into the low MAC byte, so each emulated model
+  presents as a distinct BLE device (distinct MAC *and* name) instead of
+  the same device renamed. (Switching family therefore needs a re-pair.)
+
 ## [0.12.0] — 2026-06-03 — Touchscreen front panel (Waveshare board)
 
 Turns the **Waveshare ESP32-C6-Touch-LCD-1.47** into a coffee-machine

@@ -160,34 +160,27 @@ const size_t NIVONA_FAMILIES_COUNT =
 static const nivona_family_t *s_current = NULL;
 static bool s_restored = false;
 // restore_once is called from multiple tasks (brew_task, cycle_task,
-// CLI). Without a guard two callers could both pass the `if (s_restored)`
-// check before either sets it, both open NVS, and the second writes
-// s_current after the first did — non-atomic check-then-act on
-// dual-core ESP32 (Xtensa bool read-modify-write is not atomic across
-// cores). A portMUX_TYPE spinlock around the whole body keeps it
-// trivially correct without changing the lazy-init contract.
+// CLI). The spinlock makes the final publish of s_current + s_restored
+// atomic across cores (Xtensa/RISC-V bool read-modify-write is not
+// atomic across cores). It guards ONLY those two writes — never the NVS
+// read, which must run with interrupts enabled (see restore_once).
 static portMUX_TYPE s_restore_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void restore_once(void) {
-    // Cheap fast-path: if already restored, no need to take the lock.
-    // The lock below pairs with the release implicit in portEXIT_CRITICAL
-    // so once s_restored is observed true here, s_current is guaranteed
-    // visible too.
+    // Fast path — already resolved.
     if (s_restored) return;
 
-    portENTER_CRITICAL(&s_restore_mux);
-    if (s_restored) {
-        // A concurrent caller won the race; bail.
-        portEXIT_CRITICAL(&s_restore_mux);
-        return;
-    }
-    // Resolve default from the table by name (was hardcoded index [7]).
-    if (s_current == NULL) {
-        const nivona_family_t *def = nivona_family_find("8000");
-        // family_find walks the same table this file owns; the lookup
-        // is safe to do under the spinlock (no I/O, no allocation).
-        s_current = (def != NULL) ? def : &NIVONA_FAMILIES[0];
-    }
+    // CRITICAL: resolve the family (including the NVS read) WITHOUT holding
+    // s_restore_mux. NVS / SPI-flash operations must run with interrupts
+    // enabled — calling nvs_open()/nvs_get_str() inside a portMUX critical
+    // section makes the flash driver take its mutex in a no-interrupts
+    // context, which aborts in lock_acquire_generic and boot-loops the
+    // device. The default "8000" has no NVS entry (nvs_open returns
+    // NOT_FOUND, the read is skipped), so the crash only showed once a
+    // family had actually been switched and persisted. (Fixed 2026-06-03.)
+    const nivona_family_t *resolved = nivona_family_find("8000");
+    if (resolved == NULL) resolved = &NIVONA_FAMILIES[0];
+
     nvs_handle_t h;
     if (nvs_open(NS_FAM, NVS_READONLY, &h) == ESP_OK) {
         char key[16] = {0};
@@ -195,13 +188,21 @@ static void restore_once(void) {
         if (nvs_get_str(h, KEY_FAM_CUR, key, &sz) == ESP_OK) {
             const nivona_family_t *f = nivona_family_find(key);
             if (f != NULL) {
-                s_current = f;
+                resolved = f;
                 ESP_LOGI(TAG, "restored family=%s from NVS", key);
             }
         }
         nvs_close(h);
     }
-    s_restored = true;
+
+    // Publish atomically. The spinlock now guards only the pointer + flag
+    // writes (no I/O) — its allowed use. If a concurrent caller already
+    // published, it wins and our redundant read is simply dropped.
+    portENTER_CRITICAL(&s_restore_mux);
+    if (!s_restored) {
+        s_current = resolved;
+        s_restored = true;
+    }
     portEXIT_CRITICAL(&s_restore_mux);
 }
 
