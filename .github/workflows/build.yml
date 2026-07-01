@@ -40,7 +40,7 @@ jobs:
             target: esp32c6
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Provide a dummy wifi_secrets.h
         # The real wifi_secrets.h is .gitignored so credentials never
